@@ -33,9 +33,9 @@ Required change surface:
 - Serialize expiry, completion, and acknowledgement. Expired requests never dispatch; late worker
   output is discarded. A restart preserves completed replay and acknowledgement state. A restart
   that interrupts an in-flight Ollama attempt exposes an unresolved state and never resubmits it.
-- Implement one bounded worker lane and bounded durable admission for this first single-task proof.
-  A new request beyond capacity receives a stable retryable error; exact repeats do not consume a
-  second reservation.
+- Implement one bounded in-process worker lane and bounded durable admission for this first
+  single-task proof. A new request beyond capacity receives a stable retryable error; exact repeats
+  do not consume a second reservation.
 - Add CI, focused unit/integration tests, a loopback-only runnable entrypoint, and concise operator
   documentation. Exercise a development smoke against the already-local Ollama candidate without
   calling that model promoted.
@@ -51,10 +51,14 @@ Explicit non-scope:
   chat endpoint, fair multi-task scheduler, or unbounded queue.
 - No persistence of prompts or worker inputs and no diagnostic mode that can enable it.
 - No retry of an ambiguous in-flight Ollama attempt after gateway restart.
+- No multi-process gateway deployment against one SQLite file; the deployment slice must enforce
+  the documented single-process service topology before exposing the gateway on a network.
 
 Assumptions/blockers:
 
 - Python 3.12+ is available on the intended Linux inference host.
+- This milestone runs exactly one gateway process. Multiple application credentials share that
+  process; multiple gateway processes do not share this SQLite lifecycle.
 - Ollama remains gateway-private and loopback-bound. Network TLS termination belongs to the later
   appliance-operations slice.
 - The exact Qwen artifact is still a candidate until the separate blinded human review is scored.
@@ -90,21 +94,56 @@ Verification plan:
    ciphertext and exact-repeat acknowledgement is idempotent; a conflicting disposition fails.
 5. Expired requests do not dispatch, late completion cannot persist output, and an interrupted
    in-flight attempt is not dispatched again after restart.
-6. Admission is bounded and an exact concurrent repeat joins the original in-process work.
+6. Admission is bounded within the single supported gateway process and an exact concurrent repeat
+   joins the original in-process work.
 7. Health responses expose only process liveness or the calling credential's task availability;
    they do not expose model, runtime, GPU, queue, or other-client details.
 8. Tests, Ruff, mypy, package build/install, and the bounded live Ollama development smoke pass.
 
 ### Implementation summary
 
-Pending implementation.
+- Added a strict FastAPI boundary for liveness, scoped health, `email.analyze@1` inference, and
+  owner-authenticated acknowledgement. Authentication happens before bounded body parsing; task,
+  request identity, expiry, and generation-policy checks happen before worker dispatch.
+- Added an owner-scoped SQLite lifecycle with transactional admission, attempt identity, exact
+  replay, restart ambiguity, expiry cleanup, acknowledgement tombstones, and AES-GCM result
+  encryption. Prompts, bearer tokens, and generated plaintext are excluded from persistence.
+- Added an Ollama adapter that streams bounded identity-encoded responses, inserts the configured
+  model only at the private worker boundary, rejects invalid JSON output, and separates proven
+  worker unavailability from ambiguous outcomes.
+- Added owner-private credential/key loading without symlink following, constant-time token-digest
+  comparison, loopback-only URL/bind validation, public-repository CI, operator documentation, and
+  an opt-in synthetic real-Ollama lifecycle proof.
 
 ### Cold diff audit
 
-Pending implementation.
+- Contract match: every runtime path is part of the single `email.analyze@1` lifecycle. Tests cover
+  authentication and disclosure boundaries, exact replay, identity collision, cross-owner access,
+  admission, expiry, late output, restart ambiguity, acknowledgement, encrypted retention, bounded
+  parsing, configuration boundaries, worker response limits, and wheel installation.
+- Effect trace: the client request never contains a model selector; `OllamaWorker` adds the pinned
+  configured model only to its loopback worker request. The public health envelope exposes the
+  task state but not the model, runtime, GPU, queue, or other credentials.
+- Boundary probe: past and exact-now expiries reject while a valid lifetime succeeds; request bytes
+  at the limit succeed and one byte over fails; boolean protocol/version values, invalid UUID text,
+  encoded worker output, symlinked private configuration, conflicting identities, duplicate
+  credentials, early/conflicting acknowledgements, and above-capacity admission all fail closed.
+- Untraced or forbidden changes: none. No fallback, application repository, Connect contract,
+  remote bind, installer, deployment service, or model-promotion state changed.
+- Diff size: this is the initial service bootstrap, including the lockfile, runtime, full lifecycle
+  test harness, CI, and operator documentation. Splitting those artifacts would leave the new public
+  repository with an unreviewable or unverified partial security boundary.
 
 ### Gap audit
 
-NOT DONE
+DONE for the implementation contract.
 
-The contract is written before code. The service, tests, verification, and PR remain to be built.
+- `uv run pytest -q`: 51 passed, 1 skipped; the skipped check is the intentionally opt-in live
+  worker test.
+- `RUN_OLLAMA_SMOKE=1 GATEWAY_OLLAMA_MODEL=qwen3-30b-a3b:latest uv run pytest -q -m live
+  tests/test_live_ollama.py`: 1 passed against the installed loopback Ollama model.
+- Ruff format and lint passed; mypy reported no issues in 7 source files.
+- The source distribution and wheel built, the wheel installed into an isolated Python 3.12
+  environment, and the installed package imported successfully.
+
+GitHub CI and reviewer reconciliation remain landing gates, not missing implementation.
