@@ -108,9 +108,10 @@ Verification plan:
 - Added an owner-scoped SQLite lifecycle with transactional admission, attempt identity, exact
   replay, restart ambiguity, expiry cleanup, acknowledgement tombstones, and AES-GCM result
   encryption. Prompts, bearer tokens, and generated plaintext are excluded from persistence.
-- Added an Ollama adapter that streams bounded identity-encoded responses, inserts the configured
-  model only at the private worker boundary, rejects invalid JSON output, and separates proven
-  worker unavailability from ambiguous outcomes.
+- Added an Ollama adapter that streams bounded identity-encoded responses under an absolute
+  cancellable deadline, inserts the configured model only at the private worker boundary, rejects
+  non-standard or invalid JSON output, and separates proven worker unavailability from ambiguous
+  outcomes.
 - Added owner-private credential/key loading without symlink following, constant-time token-digest
   comparison, loopback-only URL/bind validation, public-repository CI, operator documentation, and
   an opt-in synthetic real-Ollama lifecycle proof.
@@ -120,14 +121,16 @@ Verification plan:
 - Contract match: every runtime path is part of the single `email.analyze@1` lifecycle. Tests cover
   authentication and disclosure boundaries, exact replay, identity collision, cross-owner access,
   admission, expiry, late output, restart ambiguity, acknowledgement, encrypted retention, bounded
-  parsing, configuration boundaries, worker response limits, and wheel installation.
+  parsing, configuration boundaries, worker response limits/deadlines, strict finite JSON, and
+  wheel installation.
 - Effect trace: the client request never contains a model selector; `OllamaWorker` adds the pinned
   configured model only to its loopback worker request. The public health envelope exposes the
   task state but not the model, runtime, GPU, queue, or other credentials.
 - Boundary probe: past and exact-now expiries reject while a valid lifetime succeeds; request bytes
   at the limit succeed and one byte over fails; boolean protocol/version values, invalid UUID text,
-  encoded worker output, symlinked private configuration, conflicting identities, duplicate
-  credentials, early/conflicting acknowledgements, and above-capacity admission all fail closed.
+  encoded worker output, non-finite JSON constants, a never-ending periodic worker response,
+  symlinked private configuration, conflicting identities, duplicate credentials,
+  early/conflicting acknowledgements, and above-capacity admission all fail closed.
 - Untraced or forbidden changes: none. No fallback, application repository, Connect contract,
   remote bind, installer, deployment service, or model-promotion state changed.
 - Diff size: this is the initial service bootstrap, including the lockfile, runtime, full lifecycle
@@ -138,7 +141,7 @@ Verification plan:
 
 DONE for the implementation contract.
 
-- `uv run pytest -q`: 51 passed, 1 skipped; the skipped check is the intentionally opt-in live
+- `uv run pytest -q`: 54 passed, 1 skipped; the skipped check is the intentionally opt-in live
   worker test.
 - `RUN_OLLAMA_SMOKE=1 GATEWAY_OLLAMA_MODEL=qwen3-30b-a3b:latest uv run pytest -q -m live
   tests/test_live_ollama.py`: 1 passed against the installed loopback Ollama model.

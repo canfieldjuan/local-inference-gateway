@@ -47,7 +47,7 @@ without printing either value:
 ```bash
 install -d -m 700 "$HOME/.local/state/local-inference-gateway"
 umask 077
-openssl rand -hex 32 > "$HOME/.local/state/local-inference-gateway/email-watcher.token"
+python -c 'from pathlib import Path; import secrets; (Path.home() / ".local/state/local-inference-gateway/email-watcher.token").write_text(secrets.token_hex(32), encoding="ascii")'
 openssl rand -base64 32 > "$HOME/.local/state/local-inference-gateway/result.key"
 sha256sum "$HOME/.local/state/local-inference-gateway/email-watcher.token"
 ```

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from typing import Protocol
@@ -47,21 +48,28 @@ class OllamaWorker:
 
     def health(self) -> bool:
         try:
-            with (
+            return asyncio.run(self._health())
+        except (TimeoutError, httpx.HTTPError, InvalidWorkerOutput):
+            return False
+
+    async def _health(self) -> bool:
+        async with asyncio.timeout(5.0):
+            async with (
                 self._client(5.0) as client,
                 client.stream("GET", f"{self.base_url}/v1/models") as response,
             ):
                 if response.status_code != 200:
                     return False
-                document = _bounded_json(response)
+                document = await _bounded_json(response)
             models = document.get("data")
             return isinstance(models, list) and any(
                 isinstance(item, dict) and item.get("id") == self.model for item in models
             )
-        except (httpx.HTTPError, InvalidWorkerOutput):
-            return False
 
     def infer(self, request: InferenceRequest, timeout_seconds: float) -> WorkerResult:
+        return asyncio.run(self._infer(request, timeout_seconds))
+
+    async def _infer(self, request: InferenceRequest, timeout_seconds: float) -> WorkerResult:
         generation = request.generation
         payload = {
             "model": self.model,
@@ -79,22 +87,23 @@ class OllamaWorker:
             },
         }
         try:
-            with (
-                self._client(timeout_seconds) as client,
-                client.stream(
-                    "POST", f"{self.base_url}/v1/chat/completions", json=payload
-                ) as response,
-            ):
-                if response.status_code in {429, 502, 503, 504}:
-                    raise WorkerUnavailable("worker rejected admission while unavailable")
-                if response.status_code >= 400:
-                    raise InvalidWorkerOutput("worker rejected the gateway request")
-                document = _bounded_json(response)
+            async with asyncio.timeout(timeout_seconds):
+                async with (
+                    self._client(timeout_seconds) as client,
+                    client.stream(
+                        "POST", f"{self.base_url}/v1/chat/completions", json=payload
+                    ) as response,
+                ):
+                    if response.status_code in {429, 502, 503, 504}:
+                        raise WorkerUnavailable("worker rejected admission while unavailable")
+                    if response.status_code >= 400:
+                        raise InvalidWorkerOutput("worker rejected the gateway request")
+                    document = await _bounded_json(response)
         except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
             raise WorkerUnavailable("worker connection was unavailable") from exc
         except (WorkerUnavailable, InvalidWorkerOutput):
             raise
-        except httpx.HTTPError as exc:
+        except (TimeoutError, httpx.HTTPError) as exc:
             raise WorkerOutcomeAmbiguous("worker outcome is unknown") from exc
         choices = document.get("choices")
         if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
@@ -114,7 +123,7 @@ class OllamaWorker:
         if len(encoded) > MAX_OUTPUT_CONTENT_BYTES:
             raise InvalidWorkerOutput("worker content exceeds its byte limit")
         try:
-            generated = json.loads(encoded)
+            generated = json.loads(encoded, parse_constant=_reject_json_constant)
         except (UnicodeDecodeError, ValueError, RecursionError) as exc:
             raise InvalidWorkerOutput("worker content is not valid JSON") from exc
         if not isinstance(generated, dict):
@@ -122,8 +131,8 @@ class OllamaWorker:
         return WorkerResult(media_type="application/json", content=content)
 
     @staticmethod
-    def _client(timeout_seconds: float) -> httpx.Client:
-        return httpx.Client(
+    def _client(timeout_seconds: float) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
             timeout=timeout_seconds,
             trust_env=False,
             follow_redirects=False,
@@ -131,7 +140,7 @@ class OllamaWorker:
         )
 
 
-def _bounded_json(response: httpx.Response) -> dict[str, object]:
+async def _bounded_json(response: httpx.Response) -> dict[str, object]:
     encoding = response.headers.get("content-encoding", "identity").strip().casefold()
     content_length = response.headers.get("content-length")
     if encoding not in {"", "identity"}:
@@ -143,14 +152,18 @@ def _bounded_json(response: httpx.Response) -> dict[str, object]:
         except ValueError as exc:
             raise InvalidWorkerOutput("worker response content length is invalid") from exc
     body = bytearray()
-    for chunk in response.iter_raw():
+    async for chunk in response.aiter_raw():
         if len(body) + len(chunk) > MAX_WORKER_RESPONSE_BYTES:
             raise InvalidWorkerOutput("worker response encoding or size is unsupported")
         body.extend(chunk)
     try:
-        document = json.loads(body)
+        document = json.loads(body, parse_constant=_reject_json_constant)
     except (UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise InvalidWorkerOutput("worker response is not valid JSON") from exc
     if not isinstance(document, dict):
         raise InvalidWorkerOutput("worker response must be a JSON object")
     return document
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant {value} is not supported")

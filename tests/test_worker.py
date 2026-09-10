@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 
 import httpx
 import pytest
@@ -16,7 +18,7 @@ from local_inference_gateway.worker import (
 
 def worker_with_handler(handler) -> OllamaWorker:  # type: ignore[no-untyped-def]
     worker = OllamaWorker("http://127.0.0.1:11434", "pinned-model")
-    worker._client = lambda timeout: httpx.Client(  # type: ignore[method-assign]
+    worker._client = lambda timeout: httpx.AsyncClient(  # type: ignore[method-assign]
         transport=httpx.MockTransport(handler),
         timeout=timeout,
         trust_env=False,
@@ -100,3 +102,30 @@ def test_worker_rejects_non_object_json_content(gateway, content: str) -> None: 
 
     with pytest.raises(InvalidWorkerOutput):
         worker.infer(InferenceRequest.model_validate(gateway.request()), 30)
+
+
+def test_worker_rejects_non_finite_json_content(gateway) -> None:  # type: ignore[no-untyped-def]
+    body = b'{"choices":[{"message":{"content":"{\\"value\\":NaN}"}}]}'
+    worker = worker_with_handler(lambda request: httpx.Response(200, stream=httpx.ByteStream(body)))
+
+    with pytest.raises(InvalidWorkerOutput, match="valid JSON"):
+        worker.infer(InferenceRequest.model_validate(gateway.request()), 30)
+
+
+class _PeriodicNeverEndingStream(httpx.AsyncByteStream):
+    async def __aiter__(self):  # type: ignore[no-untyped-def]
+        while True:
+            await asyncio.sleep(0.005)
+            yield b" "
+
+
+def test_worker_enforces_absolute_deadline_while_bytes_arrive(gateway) -> None:  # type: ignore[no-untyped-def]
+    worker = worker_with_handler(
+        lambda request: httpx.Response(200, stream=_PeriodicNeverEndingStream())
+    )
+    started = time.monotonic()
+
+    with pytest.raises(WorkerOutcomeAmbiguous):
+        worker.infer(InferenceRequest.model_validate(gateway.request()), 0.03)
+
+    assert time.monotonic() - started < 1.0

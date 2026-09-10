@@ -74,6 +74,7 @@ class Generation(ContractModel):
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=False,
+            allow_nan=False,
         ).encode("utf-8")
         if len(schema_bytes) > MAX_SCHEMA_BYTES:
             raise ValueError("response_schema exceeds its byte limit")
@@ -120,6 +121,7 @@ class InferenceRequest(ContractModel):
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=False,
+            allow_nan=False,
         ).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
 
@@ -158,13 +160,17 @@ def _validate_json_shape(value: object) -> None:
 
 def parse_json_object(raw: bytes) -> dict[str, object]:
     try:
-        value = json.loads(raw)
+        value = json.loads(raw, parse_constant=_reject_json_constant)
     except (UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise ValueError("request body is not valid JSON") from exc
     if not isinstance(value, dict):
         raise ValueError("request body must be a JSON object")
     _validate_json_shape(value)
     return value
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant {value} is not supported")
 
 
 def safe_request_id(value: object) -> str | None:
