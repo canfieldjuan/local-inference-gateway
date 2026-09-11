@@ -17,6 +17,37 @@ def test_canonical_digest_is_stable_for_key_order(gateway) -> None:  # type: ign
         InferenceRequest.model_validate(first).canonical_digest()
         == InferenceRequest.model_validate(second).canonical_digest()
     )
+    assert (
+        InferenceRequest.model_validate(first).canonical_digest()
+        == "bcc5fa6eae72d6388afb66bef89d141f888104b99d738ee045dcf6a01ac36b50"
+    )
+
+
+@pytest.mark.parametrize("seed", [0, 9_223_372_036_854_775_807])
+def test_seed_is_optional_bounded_and_part_of_canonical_identity(gateway, seed: int) -> None:  # type: ignore[no-untyped-def]
+    unseeded = gateway.request()
+    seeded = deepcopy(unseeded)
+    seeded["generation"]["seed"] = seed  # type: ignore[index]
+    different = deepcopy(seeded)
+    different["generation"]["seed"] = seed + 1 if seed == 0 else seed - 1  # type: ignore[index]
+
+    baseline = InferenceRequest.model_validate(unseeded)
+    admitted = InferenceRequest.model_validate(seeded)
+    other = InferenceRequest.model_validate(different)
+
+    assert baseline.generation.seed is None
+    assert admitted.generation.seed == seed
+    assert admitted.canonical_digest() != baseline.canonical_digest()
+    assert admitted.canonical_digest() != other.canonical_digest()
+
+
+@pytest.mark.parametrize("seed", [True, -1, 9_223_372_036_854_775_808])
+def test_seed_rejects_ambiguous_and_out_of_range_values(gateway, seed: object) -> None:  # type: ignore[no-untyped-def]
+    document = gateway.request()
+    document["generation"]["seed"] = seed  # type: ignore[index]
+
+    with pytest.raises(ValidationError):
+        InferenceRequest.model_validate(document)
 
 
 def test_canonical_digest_preserves_exact_schema_numbers(gateway) -> None:  # type: ignore[no-untyped-def]

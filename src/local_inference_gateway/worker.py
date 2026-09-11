@@ -95,6 +95,8 @@ class OllamaWorker:
                 },
             },
         }
+        if generation.seed is not None:
+            payload["seed"] = generation.seed
         try:
             async with asyncio.timeout(timeout_seconds):
                 async with (

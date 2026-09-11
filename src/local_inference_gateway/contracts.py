@@ -91,6 +91,7 @@ class GenerationMessage(ContractModel):
 class Generation(ContractModel):
     messages: list[GenerationMessage] = Field(min_length=2, max_length=2)
     temperature: float = Field(ge=0.0, le=1.0)
+    seed: int | None = Field(default=None, ge=0, le=9_223_372_036_854_775_807)
     response_schema: dict[str, Any]
 
     @model_validator(mode="after")
@@ -151,7 +152,7 @@ class InferenceRequest(ContractModel):
         return datetime.strptime(self.request_expires_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
 
     def canonical_digest(self) -> str:
-        encoded = encode_json_bytes(self.model_dump(mode="python"))
+        encoded = encode_json_bytes(self.model_dump(mode="python", exclude_none=True))
         return hashlib.sha256(encoded).hexdigest()
 
 
