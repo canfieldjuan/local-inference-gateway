@@ -12,6 +12,7 @@ dependencies = [
   "cryptography>=46,<50",
   "fastapi>=0.135,<1",
   "httpx>=0.28,<1",
+  "jsonschema>=4.25,<5",
   "pydantic>=2.12,<3",
   "uvicorn>=0.41,<1",
 ]
@@ -25,6 +26,7 @@ dev = [
   "mypy>=1.17,<2",
   "pytest>=8.4,<10",
   "ruff>=0.13,<1",
+  "types-jsonschema>=4.25,<5",
 ]
 
 [tool.hatch.build.targets.wheel]

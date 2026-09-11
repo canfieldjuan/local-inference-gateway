@@ -121,6 +121,7 @@ def build_harness(
     max_open_total: int = 16,
     max_open_per_credential: int = 4,
     request_max_bytes: int = 1_000_000,
+    maintenance_interval_seconds: float = 30.0,
     database_name: str = "gateway.sqlite3",
     clock: ManualClock | None = None,
     worker: FakeWorker | None = None,
@@ -139,6 +140,7 @@ def build_harness(
         ollama_model="qwen3-30b-a3b:latest",
         deployment_id="test-deployment",
         request_max_bytes=request_max_bytes,
+        maintenance_interval_seconds=maintenance_interval_seconds,
         max_open_total=max_open_total,
         max_open_per_credential=max_open_per_credential,
     )

@@ -19,7 +19,8 @@ this first slice.
 - Bearer tokens are stored by clients. The gateway credential file contains only SHA-256 token
   digests and task grants.
 - Prompts and worker inputs remain in memory. SQLite stores request metadata and AES-GCM encrypted
-  results until the owning client acknowledges durable receipt or the request expires.
+  results until the owning client acknowledges durable receipt or the request expires. A scheduled
+  maintenance task removes expired ciphertext even while the gateway is otherwise idle.
 - Exact retries replay one result. An attempt interrupted after worker submission remains ambiguous
   until expiry because Ollama provides no authoritative request-status lookup.
 
@@ -82,6 +83,9 @@ export GATEWAY_OLLAMA_MODEL="qwen3-30b-a3b:latest"
 export GATEWAY_DEPLOYMENT_ID="development-host"
 uv run local-inference-gateway
 ```
+
+Expiry maintenance runs every 30 seconds by default. Operators may set
+`GATEWAY_MAINTENANCE_INTERVAL_SECONDS` to a bounded interval between 0.01 and 3600 seconds.
 
 Safe unauthenticated liveness check:
 

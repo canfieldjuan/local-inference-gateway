@@ -112,6 +112,21 @@ def test_worker_rejects_non_finite_json_content(gateway) -> None:  # type: ignor
         worker.infer(InferenceRequest.model_validate(gateway.request()), 30)
 
 
+def test_worker_rejects_json_that_does_not_match_declared_schema(gateway) -> None:  # type: ignore[no-untyped-def]
+    document = gateway.request()
+    document["generation"]["response_schema"] = {  # type: ignore[index]
+        "type": "object",
+        "properties": {"summary": {"type": "string"}},
+        "required": ["summary"],
+        "additionalProperties": False,
+    }
+    body = json.dumps({"choices": [{"message": {"content": '{"wrong":true}'}}]}).encode()
+    worker = worker_with_handler(lambda request: httpx.Response(200, stream=httpx.ByteStream(body)))
+
+    with pytest.raises(InvalidWorkerOutput, match="response schema"):
+        worker.infer(InferenceRequest.model_validate(document), 30)
+
+
 class _PeriodicNeverEndingStream(httpx.AsyncByteStream):
     async def __aiter__(self):  # type: ignore[no-untyped-def]
         while True:

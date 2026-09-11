@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -41,6 +43,7 @@ from .worker import (
 )
 
 SUPPORTED_TASK = ("email.analyze", 1)
+TASK_POLICY_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -161,7 +164,9 @@ class GatewayService:
                 attempt_id,
                 result.media_type,
                 result.content,
-                self.clock(),
+                deployment_id=self.settings.deployment_id,
+                task_policy_version=TASK_POLICY_VERSION,
+                now=self.clock(),
             ):
                 raise GatewayFailure("request_expired", False, 409)
             completed = self.store.get_owned(
@@ -226,6 +231,11 @@ class GatewayService:
 
     def _existing_response(self, record: RequestRecord) -> dict[str, object] | None:
         if record.state == "completed":
+            if (
+                record.producing_deployment_id is None
+                or record.producing_task_policy_version is None
+            ):
+                raise GatewayFailure("invalid_worker_output", False, 500)
             try:
                 content = self.store.output(record)
             except StoreError as exc:
@@ -239,8 +249,8 @@ class GatewayService:
                     "content": content,
                 },
                 "provenance": {
-                    "task_policy_version": 1,
-                    "deployment_id": self.settings.deployment_id,
+                    "task_policy_version": record.producing_task_policy_version,
+                    "deployment_id": record.producing_deployment_id,
                 },
             }
         if record.state == "failed":
@@ -323,11 +333,25 @@ def create_app(
     store.initialize(clock())
     worker = worker or OllamaWorker(settings.ollama_base_url, settings.ollama_model)
     service = GatewayService(settings, store, worker, clock)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        maintenance = asyncio.create_task(
+            _run_maintenance(store, clock, settings.maintenance_interval_seconds)
+        )
+        try:
+            yield
+        finally:
+            maintenance.cancel()
+            with suppress(asyncio.CancelledError):
+                await maintenance
+
     app = FastAPI(
         title="Local Inference Gateway",
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+        lifespan=lifespan,
     )
     app.state.gateway_service = service
 
@@ -386,6 +410,21 @@ def create_app(
             )
 
     return app
+
+
+async def _run_maintenance(
+    store: RequestStore,
+    clock: Callable[[], datetime],
+    interval_seconds: float,
+) -> None:
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            await run_in_threadpool(store.maintain, clock())
+        except Exception:
+            # Cleanup is retried on the next bounded interval. Request paths also
+            # continue to run the same transactional cleanup before state changes.
+            continue
 
 
 def _authenticate(request: Request, credentials: CredentialStore) -> Credential | None:

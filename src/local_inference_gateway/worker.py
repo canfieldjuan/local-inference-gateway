@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import Protocol
 
 import httpx
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError, ValidationError
 
 from .contracts import InferenceRequest
 
@@ -128,6 +130,10 @@ class OllamaWorker:
             raise InvalidWorkerOutput("worker content is not valid JSON") from exc
         if not isinstance(generated, dict):
             raise InvalidWorkerOutput("worker content must be a JSON object")
+        try:
+            Draft202012Validator(generation.response_schema).validate(generated)
+        except (SchemaError, ValidationError) as exc:
+            raise InvalidWorkerOutput("worker content does not match response schema") from exc
         return WorkerResult(media_type="application/json", content=content)
 
     @staticmethod

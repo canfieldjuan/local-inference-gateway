@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import TracebackType
-from typing import Literal
+from typing import ClassVar, Literal
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -70,6 +70,8 @@ class RequestRecord:
     output_media_type: str | None
     output_nonce: bytes | None
     output_ciphertext: bytes | None
+    producing_deployment_id: str | None
+    producing_task_policy_version: int | None
     error_code: str | None
     error_retryable: bool | None
     error_retry_after_seconds: int | None
@@ -131,6 +133,31 @@ class ResultCipher:
 
 class RequestStore:
     SCHEMA_VERSION = 1
+    SCHEMA_COLUMNS: ClassVar[dict[str, set[str]]] = {
+        "schema_metadata": {"singleton", "version"},
+        "inference_requests": {
+            "request_id",
+            "credential_hash",
+            "request_digest",
+            "task_id",
+            "task_version",
+            "expires_at",
+            "state",
+            "attempt_id",
+            "output_media_type",
+            "output_nonce",
+            "output_ciphertext",
+            "producing_deployment_id",
+            "producing_task_policy_version",
+            "error_code",
+            "error_retryable",
+            "error_retry_after_seconds",
+            "acknowledgement_disposition",
+            "created_at",
+            "updated_at",
+            "acknowledged_at",
+        },
+    }
 
     def __init__(
         self,
@@ -174,6 +201,7 @@ class RequestStore:
                         f"database schema version {version} is not supported by "
                         f"{self.SCHEMA_VERSION}"
                     )
+                self._validate_schema_columns(connection)
                 connection.execute(
                     """
                     UPDATE inference_requests
@@ -219,6 +247,9 @@ class RequestStore:
                     output_media_type TEXT,
                     output_nonce BLOB,
                     output_ciphertext BLOB,
+                    producing_deployment_id TEXT,
+                    producing_task_policy_version INTEGER
+                        CHECK (producing_task_policy_version >= 1),
                     error_code TEXT,
                     error_retryable INTEGER,
                     error_retry_after_seconds INTEGER,
@@ -235,6 +266,15 @@ class RequestStore:
                     ON inference_requests (credential_hash, state)
             """
         )
+
+    @classmethod
+    def _validate_schema_columns(cls, connection: sqlite3.Connection) -> None:
+        for table, expected in cls.SCHEMA_COLUMNS.items():
+            actual = {
+                row["name"] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            if actual != expected:
+                raise StoreError("database schema columns do not match the supported version")
 
     def admit(
         self,
@@ -374,6 +414,9 @@ class RequestStore:
         attempt_id: str,
         media_type: str,
         content: str,
+        *,
+        deployment_id: str,
+        task_policy_version: int,
         now: datetime,
     ) -> bool:
         with self._transaction() as connection:
@@ -388,19 +431,26 @@ class RequestStore:
                 """
                 UPDATE inference_requests
                 SET state = 'completed', output_media_type = ?, output_nonce = ?,
-                    output_ciphertext = ?, updated_at = ?
+                    output_ciphertext = ?, producing_deployment_id = ?,
+                    producing_task_policy_version = ?, updated_at = ?
                 WHERE request_id = ? AND state = 'in_progress' AND attempt_id = ?
                 """,
                 (
                     media_type,
                     nonce,
                     ciphertext,
+                    deployment_id,
+                    task_policy_version,
                     _timestamp(now),
                     request_id,
                     attempt_id,
                 ),
             )
             return int(cursor.rowcount) == 1
+
+    def maintain(self, now: datetime) -> None:
+        with self._transaction() as connection:
+            self._cleanup(connection, now)
 
     def output(self, record: RequestRecord) -> str:
         if record.state != "completed":
@@ -503,6 +553,8 @@ class RequestStore:
             output_media_type=row["output_media_type"],
             output_nonce=row["output_nonce"],
             output_ciphertext=row["output_ciphertext"],
+            producing_deployment_id=row["producing_deployment_id"],
+            producing_task_policy_version=row["producing_task_policy_version"],
             error_code=row["error_code"],
             error_retryable=bool(retryable) if retryable is not None else None,
             error_retry_after_seconds=row["error_retry_after_seconds"],

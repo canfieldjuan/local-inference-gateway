@@ -79,3 +79,17 @@ def test_contract_rejects_non_finite_json(gateway) -> None:  # type: ignore[no-u
     document["generation"]["response_schema"] = {"minimum": float("inf")}  # type: ignore[index]
     with pytest.raises(ValidationError):
         InferenceRequest.model_validate(document)
+
+
+def test_contract_rejects_invalid_or_remote_response_schema(gateway) -> None:  # type: ignore[no-untyped-def]
+    invalid = gateway.request()
+    invalid["generation"]["response_schema"] = {"type": 42}  # type: ignore[index]
+    remote = gateway.request()
+    remote["generation"]["response_schema"] = {  # type: ignore[index]
+        "$ref": "https://example.invalid/schema.json"
+    }
+
+    with pytest.raises(ValidationError, match="valid JSON Schema"):
+        InferenceRequest.model_validate(invalid)
+    with pytest.raises(ValidationError, match="stay within the request"):
+        InferenceRequest.model_validate(remote)

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import timedelta
 
 from fastapi.testclient import TestClient
@@ -285,7 +287,7 @@ def test_restart_replays_completed_ciphertext_without_worker_call(tmp_path) -> N
     )
     restarted = TestClient(
         create_app(
-            first.settings,
+            replace(first.settings, deployment_id="replacement-deployment"),
             credentials=first.credentials,
             store=restarted_store,
             worker=restarted_worker,  # type: ignore[arg-type]
@@ -296,4 +298,26 @@ def test_restart_replays_completed_ciphertext_without_worker_call(tmp_path) -> N
 
     assert replay.status_code == 200
     assert replay.json() == original.json()
+    assert replay.json()["provenance"] == {
+        "task_policy_version": 1,
+        "deployment_id": "test-deployment",
+    }
     assert restarted_worker.calls == 0
+
+
+def test_scheduled_maintenance_removes_idle_expired_ciphertext(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    gateway = build_harness(tmp_path, maintenance_interval_seconds=0.01)
+
+    with gateway.client as client:
+        completed = client.post("/v1/inference", headers=gateway.headers, json=gateway.request())
+        assert completed.status_code == 200
+        assert all(value is not None for value in gateway.store.raw_persisted_values(REQUEST_ID))
+
+        gateway.clock.advance(301)
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline:
+            if gateway.store.raw_persisted_values(REQUEST_ID) == (None, None):
+                break
+            time.sleep(0.01)
+
+    assert gateway.store.raw_persisted_values(REQUEST_ID) == (None, None)

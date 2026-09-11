@@ -44,7 +44,9 @@ def test_store_encrypts_then_acknowledges_result(gateway) -> None:  # type: igno
         "attempt-1",
         "application/json",
         '{"private":"generated"}',
-        gateway.clock(),
+        deployment_id="test-deployment",
+        task_policy_version=1,
+        now=gateway.clock(),
     )
     completed = gateway.store.get_owned(
         record.request_id, credential.identity_hash, digest, gateway.clock()
@@ -111,7 +113,9 @@ def test_expiry_wins_before_late_completion(gateway) -> None:  # type: ignore[no
         "attempt-1",
         "application/json",
         "late private output",
-        gateway.clock(),
+        deployment_id="test-deployment",
+        task_policy_version=1,
+        now=gateway.clock(),
     )
     with pytest.raises(RequestExpired):
         gateway.store.acknowledge(
@@ -192,6 +196,37 @@ def test_initialize_rejects_future_schema_without_mutating_rows(gateway) -> None
     )
 
     with pytest.raises(StoreError, match="version 2"):
+        restarted.initialize(gateway.clock())
+
+    connection = sqlite3.connect(gateway.settings.database_path)
+    state = connection.execute(
+        "SELECT state FROM inference_requests WHERE request_id = ?", (request.request_id,)
+    ).fetchone()[0]
+    connection.close()
+    assert state == "in_progress"
+
+
+def test_initialize_rejects_same_version_with_missing_provenance_without_mutation(gateway) -> None:  # type: ignore[no-untyped-def]
+    request = InferenceRequest.model_validate(gateway.request())
+    credential = gateway.credentials.authenticate(gateway.headers["Authorization"].split()[1])
+    assert credential is not None
+    gateway.store.admit(
+        request, credential.identity_hash, request.canonical_digest(), gateway.clock()
+    )
+    gateway.store.mark_in_progress(request.request_id, "active-attempt", gateway.clock())
+    connection = sqlite3.connect(gateway.settings.database_path)
+    connection.execute("ALTER TABLE inference_requests DROP COLUMN producing_deployment_id")
+    connection.commit()
+    connection.close()
+    restarted = RequestStore(
+        gateway.settings.database_path,
+        gateway.store.cipher,
+        max_open_total=16,
+        max_open_per_credential=4,
+        tombstone_retention_seconds=86_400,
+    )
+
+    with pytest.raises(StoreError, match="schema columns"):
         restarted.initialize(gateway.clock())
 
     connection = sqlite3.connect(gateway.settings.database_path)

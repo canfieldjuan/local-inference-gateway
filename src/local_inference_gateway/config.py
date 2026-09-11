@@ -166,6 +166,7 @@ class Settings:
     max_open_total: int = 16
     max_open_per_credential: int = 4
     tombstone_retention_seconds: int = 86_400
+    maintenance_interval_seconds: float = 30.0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "ollama_base_url", _loopback_worker_url(self.ollama_base_url))
@@ -193,6 +194,8 @@ class Settings:
             raise ConfigurationError("admission limits are invalid")
         if not 1 <= self.tombstone_retention_seconds <= 31_536_000:
             raise ConfigurationError("tombstone retention is invalid")
+        if not 0.01 <= self.maintenance_interval_seconds <= 3_600:
+            raise ConfigurationError("maintenance interval is invalid")
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -212,6 +215,9 @@ class Settings:
             values[field] = Path(value) if field.endswith("_path") else value
         values["bind_host"] = os.environ.get("GATEWAY_BIND_HOST", "127.0.0.1")
         values["bind_port"] = _environment_int("GATEWAY_BIND_PORT", 8787)
+        values["maintenance_interval_seconds"] = _environment_float(
+            "GATEWAY_MAINTENANCE_INTERVAL_SECONDS", 30.0
+        )
         return cls(**values)  # type: ignore[arg-type]
 
 
@@ -223,3 +229,13 @@ def _environment_int(name: str, default: int) -> int:
         return int(raw)
     except ValueError as exc:
         raise ConfigurationError(f"{name} must be an integer") from exc
+
+
+def _environment_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ConfigurationError(f"{name} must be a number") from exc

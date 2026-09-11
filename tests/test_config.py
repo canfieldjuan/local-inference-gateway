@@ -101,3 +101,32 @@ def test_settings_reject_non_private_worker_authorities(tmp_path: Path, url: str
             ollama_model="model",
             deployment_id="deployment",
         )
+
+
+@pytest.mark.parametrize("interval", [0.0, float("nan"), float("inf"), 3_600.01])
+def test_settings_reject_invalid_maintenance_intervals(tmp_path: Path, interval: float) -> None:
+    with pytest.raises(ConfigurationError, match="maintenance interval"):
+        Settings(
+            database_path=tmp_path / "db",
+            credentials_path=tmp_path / "credentials",
+            encryption_key_path=tmp_path / "key",
+            ollama_base_url="http://127.0.0.1:11434",
+            ollama_model="model",
+            deployment_id="deployment",
+            maintenance_interval_seconds=interval,
+        )
+
+
+@pytest.mark.parametrize("interval", [0.01, 3_600.0])
+def test_settings_accept_maintenance_interval_boundaries(tmp_path: Path, interval: float) -> None:
+    settings = Settings(
+        database_path=tmp_path / "db",
+        credentials_path=tmp_path / "credentials",
+        encryption_key_path=tmp_path / "key",
+        ollama_base_url="http://127.0.0.1:11434",
+        ollama_model="model",
+        deployment_id="deployment",
+        maintenance_interval_seconds=interval,
+    )
+
+    assert settings.maintenance_interval_seconds == interval

@@ -6,6 +6,8 @@ import re
 from datetime import UTC, datetime
 from typing import Any, Literal
 
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 PROTOCOL_VERSION = 1
@@ -79,6 +81,11 @@ class Generation(ContractModel):
         if len(schema_bytes) > MAX_SCHEMA_BYTES:
             raise ValueError("response_schema exceeds its byte limit")
         _validate_json_shape(self.response_schema)
+        _validate_schema_references(self.response_schema)
+        try:
+            Draft202012Validator.check_schema(self.response_schema)
+        except SchemaError as exc:
+            raise ValueError("response_schema is not valid JSON Schema") from exc
         return self
 
 
@@ -156,6 +163,21 @@ def _validate_json_shape(value: object) -> None:
             stack.extend((item, depth + 1) for item in current.values())
         elif isinstance(current, list):
             stack.extend((item, depth + 1) for item in current)
+
+
+def _validate_schema_references(schema: dict[str, Any]) -> None:
+    stack: list[object] = [schema]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            for key, value in current.items():
+                if key in {"$ref", "$dynamicRef"} and (
+                    not isinstance(value, str) or not value.startswith("#")
+                ):
+                    raise ValueError("response_schema references must stay within the request")
+                stack.append(value)
+        elif isinstance(current, list):
+            stack.extend(current)
 
 
 def parse_json_object(raw: bytes) -> dict[str, object]:
