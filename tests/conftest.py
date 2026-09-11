@@ -111,7 +111,12 @@ def credential_store() -> CredentialStore:
     other = Credential(
         hashlib.sha256(b"document-summarizer").hexdigest(),
         hashlib.sha256(OTHER_TOKEN.encode("ascii")).hexdigest(),
-        frozenset({("document.chunk.summarize", 1)}),
+        frozenset(
+            {
+                ("document.chunk.summarize", 1),
+                ("document.summary.step", 1),
+            }
+        ),
     )
     return CredentialStore((email, other))
 
