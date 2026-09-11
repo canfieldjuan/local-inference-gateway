@@ -197,7 +197,7 @@ def _validate_supported_schema(
         for child in properties.values():
             if not isinstance(child, dict):
                 raise ValueError("response_schema properties must contain schemas")
-            _validate_supported_schema(child)
+            _validate_supported_schema(child, allow_nullable_any_of=allow_nullable_any_of)
     additional = schema.get("additionalProperties")
     if additional is not None and not isinstance(additional, bool):
         raise ValueError("response_schema additionalProperties must be boolean")
@@ -213,7 +213,7 @@ def _validate_supported_schema(
             type(min_items) is not int or not 0 <= min_items <= max_items
         ):
             raise ValueError("response_schema array minItems is invalid")
-        _validate_supported_schema(item_schema)
+        _validate_supported_schema(item_schema, allow_nullable_any_of=allow_nullable_any_of)
     elif item_schema is not None or min_items is not None or max_items is not None:
         raise ValueError("response_schema array keywords require array type")
     enum = schema.get("enum")

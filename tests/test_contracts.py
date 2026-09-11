@@ -222,6 +222,45 @@ def test_contract_rejects_unbounded_or_malformed_arrays(
         InferenceRequest.model_validate(document)
 
 
+@pytest.mark.parametrize("container_type", ["array", "object"])
+def test_contract_array_or_object_recursion_cannot_reset_nullable_union_guard(
+    gateway,
+    container_type: str,  # type: ignore[no-untyped-def]
+) -> None:
+    nested_nullable = {
+        "anyOf": [
+            {"type": "string", "maxLength": 20},
+            {"type": "null"},
+        ]
+    }
+    if container_type == "array":
+        non_null_branch = {
+            "type": "array",
+            "items": nested_nullable,
+            "maxItems": 4,
+        }
+    else:
+        non_null_branch = {
+            "type": "object",
+            "properties": {"nested": nested_nullable},
+        }
+    document = gateway.request()
+    document["generation"]["response_schema"] = {  # type: ignore[index]
+        "type": "object",
+        "properties": {
+            "value": {
+                "anyOf": [
+                    non_null_branch,
+                    {"type": "null"},
+                ]
+            }
+        },
+    }
+
+    with pytest.raises(ValidationError, match="one bounded nullable union"):
+        InferenceRequest.model_validate(document)
+
+
 @pytest.mark.parametrize("schema_type", [["string", "null"]])
 def test_contract_rejects_unsupported_nested_schema_types(
     gateway,

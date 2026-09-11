@@ -82,10 +82,12 @@ Verification plan:
   still enter the same `GatewayService.infer` lifecycle and worker lane.
 - `contracts.py` adds only bounded homogeneous arrays. It continues rejecting `$ref`, `$defs`,
   patterns, tuple schemas, open-ended combinators, unsupported types, excessive depth/nodes/bytes,
-  and invalid numeric values before dispatch.
+  and invalid numeric values before dispatch. The nullable-union admission state propagates through
+  both property and item recursion so a container cannot reopen a nested union.
 - Tests cover the array cap at 0/100/101, malformed/falsy bounds, missing or tuple `items`,
-  `minItems` below zero and above `maxItems`, array keywords on a scalar, credential isolation,
-  unsupported tasks, nested generated-output rejection, and successful scheduling acknowledgement.
+  `minItems` below zero and above `maxItems`, array keywords on a scalar, nested nullable-union
+  bypasses through arrays and objects, credential isolation, unsupported tasks, nested generated-output
+  rejection, and successful scheduling acknowledgement.
 - README changes describe only the implemented task and schema admission. Worker selection, storage,
   TLS, application repositories, and deployment files are untouched.
 - Untraced or forbidden changes: none.
@@ -94,8 +96,9 @@ Verification plan:
 
 DONE for the gateway task-policy surface.
 
-- Focused boundary/task tests: 14 passed; the array-output worker probe: 1 passed.
-- Full local gate: 118 passed and 1 intentionally skipped live test; Ruff format/lint, mypy over 7
+- Focused boundary/task tests: 14 passed; the array-output worker probe: 1 passed; the review-driven
+  nullable-union recursion probe: 5 passed.
+- Full local gate: 120 passed and 1 intentionally skipped live test; Ruff format/lint, mypy over 7
   source files, diff whitespace, source distribution, and wheel build passed.
 - The opt-in live Ollama smoke was not rerun because worker transport and model selection are
   unchanged.
