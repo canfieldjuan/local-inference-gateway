@@ -46,8 +46,14 @@ def test_worker_inserts_model_only_at_private_worker_boundary(gateway) -> None: 
 
     assert result.content == '{"ok":true}'
     assert requests[0]["model"] == "pinned-model"
+    assert "seed" not in requests[0]
     assert "model" not in gateway.request()
     assert requests[0]["response_format"]["json_schema"]["strict"] is True  # type: ignore[index]
+
+    seeded = gateway.request()
+    seeded["generation"]["seed"] = 9_223_372_036_854_775_807  # type: ignore[index]
+    worker.infer(InferenceRequest.model_validate(seeded), 30)
+    assert requests[1]["seed"] == 9_223_372_036_854_775_807
 
 
 def test_worker_health_requires_exact_configured_model() -> None:
