@@ -71,9 +71,10 @@ def test_contract_bounds_schema_depth_and_request_json(gateway) -> None:  # type
         parse_json_object(b"[]")
 
 
-def test_contract_rejects_non_finite_json(gateway) -> None:  # type: ignore[no-untyped-def]
+@pytest.mark.parametrize("number", [b"NaN", b"1e999"])
+def test_contract_rejects_non_finite_json(gateway, number: bytes) -> None:  # type: ignore[no-untyped-def]
     with pytest.raises(ValueError, match="not valid JSON"):
-        parse_json_object(b'{"response_schema":{"minimum":NaN}}')
+        parse_json_object(b'{"response_schema":{"minimum":' + number + b"}}")
 
     document = gateway.request()
     document["generation"]["response_schema"] = {"minimum": float("inf")}  # type: ignore[index]

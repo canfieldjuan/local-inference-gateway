@@ -9,7 +9,7 @@ import httpx
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
 
-from .contracts import InferenceRequest
+from .contracts import InferenceRequest, parse_json_float
 
 MAX_WORKER_RESPONSE_BYTES = 1_000_000
 MAX_OUTPUT_CONTENT_BYTES = 750_000
@@ -125,7 +125,11 @@ class OllamaWorker:
         if len(encoded) > MAX_OUTPUT_CONTENT_BYTES:
             raise InvalidWorkerOutput("worker content exceeds its byte limit")
         try:
-            generated = json.loads(encoded, parse_constant=_reject_json_constant)
+            generated = json.loads(
+                encoded,
+                parse_constant=_reject_json_constant,
+                parse_float=parse_json_float,
+            )
         except (UnicodeDecodeError, ValueError, RecursionError) as exc:
             raise InvalidWorkerOutput("worker content is not valid JSON") from exc
         if not isinstance(generated, dict):
@@ -163,7 +167,11 @@ async def _bounded_json(response: httpx.Response) -> dict[str, object]:
             raise InvalidWorkerOutput("worker response encoding or size is unsupported")
         body.extend(chunk)
     try:
-        document = json.loads(body, parse_constant=_reject_json_constant)
+        document = json.loads(
+            body,
+            parse_constant=_reject_json_constant,
+            parse_float=parse_json_float,
+        )
     except (UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise InvalidWorkerOutput("worker response is not valid JSON") from exc
     if not isinstance(document, dict):

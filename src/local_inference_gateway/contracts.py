@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -182,7 +183,11 @@ def _validate_schema_references(schema: dict[str, Any]) -> None:
 
 def parse_json_object(raw: bytes) -> dict[str, object]:
     try:
-        value = json.loads(raw, parse_constant=_reject_json_constant)
+        value = json.loads(
+            raw,
+            parse_constant=_reject_json_constant,
+            parse_float=parse_json_float,
+        )
     except (UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise ValueError("request body is not valid JSON") from exc
     if not isinstance(value, dict):
@@ -193,6 +198,13 @@ def parse_json_object(raw: bytes) -> dict[str, object]:
 
 def _reject_json_constant(value: str) -> None:
     raise ValueError(f"non-finite JSON constant {value} is not supported")
+
+
+def parse_json_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError("non-finite JSON number is not supported")
+    return parsed
 
 
 def safe_request_id(value: object) -> str | None:

@@ -104,8 +104,17 @@ def test_worker_rejects_non_object_json_content(gateway, content: str) -> None: 
         worker.infer(InferenceRequest.model_validate(gateway.request()), 30)
 
 
-def test_worker_rejects_non_finite_json_content(gateway) -> None:  # type: ignore[no-untyped-def]
-    body = b'{"choices":[{"message":{"content":"{\\"value\\":NaN}"}}]}'
+@pytest.mark.parametrize("content", ['{"value":NaN}', '{"value":1e999}'])
+def test_worker_rejects_non_finite_json_content(gateway, content: str) -> None:  # type: ignore[no-untyped-def]
+    body = json.dumps({"choices": [{"message": {"content": content}}]}).encode()
+    worker = worker_with_handler(lambda request: httpx.Response(200, stream=httpx.ByteStream(body)))
+
+    with pytest.raises(InvalidWorkerOutput, match="valid JSON"):
+        worker.infer(InferenceRequest.model_validate(gateway.request()), 30)
+
+
+def test_worker_rejects_outer_json_number_that_overflows_to_infinity(gateway) -> None:  # type: ignore[no-untyped-def]
+    body = b'{"overflow":1e999,"choices":[{"message":{"content":"{}"}}]}'
     worker = worker_with_handler(lambda request: httpx.Response(200, stream=httpx.ByteStream(body)))
 
     with pytest.raises(InvalidWorkerOutput, match="valid JSON"):
