@@ -1,0 +1,31 @@
+[Unit]
+Description=Local Inference Gateway
+After=network-online.target ollama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=local-inference-gateway
+Group=local-inference-gateway
+EnvironmentFile=/etc/local-inference-gateway/gateway.env
+ExecStart=/opt/local-inference-gateway/venv/bin/local-inference-gateway
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+UMask=0077
+StateDirectory=local-inference-gateway
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/local-inference-gateway
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

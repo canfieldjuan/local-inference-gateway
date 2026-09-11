@@ -4,15 +4,16 @@ A private, on-prem inference boundary for Local Connect applications. Applicatio
 versioned task; the gateway owns worker selection and model identity. This keeps application code
 independent of Ollama, LM Studio, GPU placement, and future runtime changes.
 
-Current milestone: one authenticated, durable `email.analyze@1` lifecycle backed by Ollama.
-LM Studio fallback, application cutover, and network-appliance deployment are intentionally not in
-this first slice.
+Current milestone: one authenticated, durable `email.analyze@1` lifecycle backed by Ollama, with an
+explicit TLS-only private-LAN listener for a single-process Linux appliance. LM Studio fallback,
+application cutover, certificate automation, and public-Internet deployment remain deferred.
 
 ## Security model
 
 - Ollama is gateway-private and must listen only on loopback.
-- This milestone's gateway listener is also loopback-only. It is a development/service proof, not
-  yet a LAN endpoint; TLS termination and firewall policy land separately.
+- The gateway defaults to loopback HTTP. A LAN listener requires one concrete private IP and a
+  configured TLS certificate/key pair; wildcard, public, multicast, and link-local binds fail
+  closed. Host firewall policy must restrict the listener to authorized private source devices.
 - Run exactly one gateway process. Multiple application credentials share that process; using
   multiple Uvicorn workers or processes against the same SQLite file is not supported by this
   milestone.
@@ -105,6 +106,49 @@ Authenticated health uses `GET /v1/health` with the client's bearer token. It re
 tasks visible to that credential and never identifies the runtime, model, GPU, queue, or other
 clients.
 
+## Private-LAN appliance mode
+
+The gateway can listen on one stable private address so several workstations can share the same
+inference host. Ollama remains on `127.0.0.1`; only the authenticated gateway is exposed. Before
+enabling this mode:
+
+1. Give the appliance a stable private IP.
+2. Supply a certificate whose SAN matches the exact DNS name or IP clients use.
+3. Install the issuing CA certificate in each authorized workstation's trust store.
+4. Restrict the gateway port at the host/network firewall to the authorized private source range.
+
+Set the listener and TLS files in the service environment:
+
+```bash
+GATEWAY_BIND_HOST=192.168.1.50
+GATEWAY_BIND_PORT=8787
+GATEWAY_TLS_CERTIFICATE_FILE=/etc/local-inference-gateway/tls/gateway.crt
+GATEWAY_TLS_KEY_FILE=/etc/local-inference-gateway/tls/gateway.key
+```
+
+The certificate must be a regular file that is not group/world-writable. The private key must be a
+regular owner-private file. Symlinked TLS inputs are rejected on the Linux appliance. The gateway
+does not generate certificates, install trust roots, or change firewall rules.
+
+The example unit at `deploy/systemd/local-inference-gateway.service` encodes the supported topology:
+one unprivileged service user, one gateway process, a protected state directory, and configuration
+under `/etc/local-inference-gateway`. Install the package into the unit's dedicated virtual
+environment and keep the database, credential file, and result key under paths readable only by the
+service account. Do not add Uvicorn workers or start a second unit against the same SQLite file.
+
+After the operator installs the unit and its private configuration, inspect it without exposing
+credentials:
+
+```bash
+systemctl status local-inference-gateway --no-pager
+journalctl -u local-inference-gateway --since today --no-pager
+curl --fail --silent --cacert /path/to/issuing-ca.crt \
+  https://gateway.internal.example:8787/health/live
+```
+
+The liveness route is intentionally unauthenticated and returns only protocol version plus process
+state. Use the existing per-application bearer token for authenticated health and inference.
+
 ## Verify
 
 ```bash
@@ -136,4 +180,5 @@ uv run pytest -q -m live tests/test_live_ollama.py
 - `acknowledgement_conflict`: reconcile the client's durable result state; do not overwrite the
   earlier disposition.
 
-The canonical lifecycle and non-goals are in `docs/PR-OLLAMA-PRIMARY-LIFECYCLE.md`.
+The canonical request lifecycle is in `docs/PR-OLLAMA-PRIMARY-LIFECYCLE.md`. The private-LAN listener
+and appliance boundary are in `docs/PR-PRIVATE-LAN-TLS.md`.

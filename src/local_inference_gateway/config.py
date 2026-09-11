@@ -13,8 +13,15 @@ from urllib.parse import urlsplit
 from .contracts import MAX_REQUEST_BYTES
 
 MAX_CONFIG_BYTES = 128 * 1024
+MAX_TLS_FILE_BYTES = 1024 * 1024
 MAX_CREDENTIALS = 100
 TOKEN_DIGEST_LENGTH = 64
+PRIVATE_BIND_NETWORKS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("fc00::/7"),
+)
 
 
 class ConfigurationError(RuntimeError):
@@ -149,6 +156,26 @@ def _loopback_worker_url(value: str) -> str:
     return f"http://{f'[{address}]' if address.version == 6 else address}:{port}"
 
 
+def _validate_tls_file(path: Path, label: str, *, owner_private: bool) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb") as stream:
+            metadata = os.fstat(stream.fileno())
+            mode = stat.S_IMODE(metadata.st_mode)
+            if not stat.S_ISREG(metadata.st_mode) or not 0 < metadata.st_size <= MAX_TLS_FILE_BYTES:
+                raise ConfigurationError(f"{label} file is invalid")
+            if os.name == "posix" and (
+                (owner_private and mode & 0o077) or (not owner_private and mode & 0o022)
+            ):
+                qualifier = "owner-private" if owner_private else "not group/world-writable"
+                raise ConfigurationError(f"{label} file must be {qualifier}")
+    except ConfigurationError:
+        raise
+    except OSError as exc:
+        raise ConfigurationError(f"{label} file is unavailable or invalid") from exc
+
+
 @dataclass(frozen=True)
 class Settings:
     database_path: Path
@@ -159,6 +186,8 @@ class Settings:
     deployment_id: str
     bind_host: str = "127.0.0.1"
     bind_port: int = 8787
+    tls_certificate_path: Path | None = None
+    tls_key_path: Path | None = None
     request_max_bytes: int = MAX_REQUEST_BYTES
     request_max_lifetime_seconds: int = 900
     worker_timeout_seconds: float = 300.0
@@ -177,9 +206,26 @@ class Settings:
         try:
             bind_address = ipaddress.ip_address(self.bind_host)
         except ValueError as exc:
-            raise ConfigurationError("bind host must be a loopback address") from exc
+            raise ConfigurationError("bind host must be an IP address") from exc
+        tls_paths = (self.tls_certificate_path, self.tls_key_path)
+        if (tls_paths[0] is None) != (tls_paths[1] is None):
+            raise ConfigurationError("TLS certificate and key must be configured together")
         if not bind_address.is_loopback:
-            raise ConfigurationError("this slice permits only a loopback bind host")
+            if (
+                not any(bind_address in network for network in PRIVATE_BIND_NETWORKS)
+                or bind_address.is_unspecified
+                or bind_address.is_multicast
+                or bind_address.is_link_local
+                or bind_address.is_reserved
+            ):
+                raise ConfigurationError(
+                    "non-loopback bind host must be a concrete private address"
+                )
+            if tls_paths[0] is None:
+                raise ConfigurationError("non-loopback bind requires TLS")
+        if tls_paths[0] is not None and tls_paths[1] is not None:
+            _validate_tls_file(tls_paths[0], "TLS certificate", owner_private=False)
+            _validate_tls_file(tls_paths[1], "TLS key", owner_private=True)
         if not 1 <= self.bind_port <= 65_535:
             raise ConfigurationError("bind port is invalid")
         if not 1 <= self.request_max_bytes <= MAX_REQUEST_BYTES:
@@ -215,6 +261,10 @@ class Settings:
             values[field] = Path(value) if field.endswith("_path") else value
         values["bind_host"] = os.environ.get("GATEWAY_BIND_HOST", "127.0.0.1")
         values["bind_port"] = _environment_int("GATEWAY_BIND_PORT", 8787)
+        certificate = os.environ.get("GATEWAY_TLS_CERTIFICATE_FILE")
+        key = os.environ.get("GATEWAY_TLS_KEY_FILE")
+        values["tls_certificate_path"] = Path(certificate) if certificate else None
+        values["tls_key_path"] = Path(key) if key else None
         values["maintenance_interval_seconds"] = _environment_float(
             "GATEWAY_MAINTENANCE_INTERVAL_SECONDS", 30.0
         )
