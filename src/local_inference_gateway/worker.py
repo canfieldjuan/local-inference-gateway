@@ -96,7 +96,7 @@ class OllamaWorker:
                         "POST", f"{self.base_url}/v1/chat/completions", json=payload
                     ) as response,
                 ):
-                    if response.status_code in {404, 429, 502, 503, 504}:
+                    if response.status_code in {404, 429} or 500 <= response.status_code <= 599:
                         raise WorkerUnavailable("worker rejected admission while unavailable")
                     if response.status_code >= 400:
                         raise InvalidWorkerOutput("worker rejected the gateway request")

@@ -128,9 +128,18 @@ class GatewayService:
                 self.store.get_owned(record.request_id, credential.identity_hash, digest, current)
                 raise GatewayFailure("request_expired", False, 409)
             self.store.mark_in_progress(record.request_id, attempt_id, current)
+            dispatch_at = self.clock()
+            if request.expires_at <= dispatch_at:
+                self.store.get_owned(
+                    record.request_id,
+                    credential.identity_hash,
+                    digest,
+                    dispatch_at,
+                )
+                raise GatewayFailure("request_expired", False, 409)
             timeout = min(
                 self.settings.worker_timeout_seconds,
-                max(0.001, (request.expires_at - current).total_seconds()),
+                max(0.001, (request.expires_at - dispatch_at).total_seconds()),
             )
             try:
                 result = self.worker.infer(request, timeout)

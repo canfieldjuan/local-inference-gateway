@@ -241,6 +241,23 @@ def test_expiry_boundaries_fail_before_dispatch(gateway) -> None:  # type: ignor
     assert gateway.worker.calls == 0
 
 
+def test_expiry_is_rechecked_after_durable_transition(gateway, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    mark_in_progress = gateway.store.mark_in_progress
+
+    def delayed_mark(*args, **kwargs):  # type: ignore[no-untyped-def]
+        record = mark_in_progress(*args, **kwargs)
+        gateway.clock.advance(301)
+        return record
+
+    monkeypatch.setattr(gateway.store, "mark_in_progress", delayed_mark)
+
+    response = gateway.client.post("/v1/inference", headers=gateway.headers, json=gateway.request())
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "request_expired"
+    assert gateway.worker.calls == 0
+
+
 def test_unsupported_schema_evaluation_is_rejected_before_dispatch(gateway) -> None:  # type: ignore[no-untyped-def]
     hostile = gateway.request()
     hostile["generation"]["response_schema"] = {  # type: ignore[index]
@@ -249,11 +266,19 @@ def test_unsupported_schema_evaluation_is_rejected_before_dispatch(gateway) -> N
     }
     dangling = deepcopy(hostile)
     dangling["generation"]["response_schema"] = {"$ref": "#/missing"}  # type: ignore[index]
+    scalar = deepcopy(hostile)
+    scalar["generation"]["response_schema"] = {"type": "string"}  # type: ignore[index]
 
     hostile_response = gateway.client.post("/v1/inference", headers=gateway.headers, json=hostile)
     dangling_response = gateway.client.post("/v1/inference", headers=gateway.headers, json=dangling)
+    scalar_response = gateway.client.post("/v1/inference", headers=gateway.headers, json=scalar)
 
-    assert hostile_response.status_code == dangling_response.status_code == 422
+    assert (
+        hostile_response.status_code
+        == dangling_response.status_code
+        == scalar_response.status_code
+        == 422
+    )
     assert gateway.worker.calls == 0
 
 

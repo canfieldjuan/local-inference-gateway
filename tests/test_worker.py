@@ -61,7 +61,7 @@ def test_worker_health_requires_exact_configured_model() -> None:
     assert worker.health() is False
 
 
-@pytest.mark.parametrize("status", [404, 429, 502, 503, 504])
+@pytest.mark.parametrize("status", [404, 429, 500, 502, 503, 504, 599])
 def test_worker_definitive_unavailable_response_is_retryable(gateway, status: int) -> None:  # type: ignore[no-untyped-def]
     worker = worker_with_handler(lambda request: httpx.Response(status))
 

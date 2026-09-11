@@ -104,6 +104,8 @@ class Generation(ContractModel):
             Draft202012Validator.check_schema(self.response_schema)
         except SchemaError as exc:
             raise ValueError("response_schema is not valid JSON Schema") from exc
+        if self.response_schema.get("type") != "object":
+            raise ValueError("response_schema root type must be object")
         return self
 
 

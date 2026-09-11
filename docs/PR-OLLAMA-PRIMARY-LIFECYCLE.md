@@ -31,8 +31,9 @@ Required change surface:
   metadata-only tombstone. Conflicting acknowledgement, wrong-owner access, and early
   acknowledgement fail closed.
 - Validate generated JSON against the caller's bounded Draft 2020-12 subset before persistence.
-  Permit only the scalar/object constraints needed by `email.analyze@1`, including one non-nested
-  nullable union; reject references, regex patterns, and open-ended combinators before dispatch.
+  Require an object root and permit only the nested scalar/object constraints needed by
+  `email.analyze@1`, including one non-nested nullable union; reject references, regex patterns,
+  and open-ended combinators before dispatch.
 - Serialize expiry, completion, and acknowledgement. Expired requests never dispatch; late worker
   output is discarded. Scheduled maintenance removes idle expired ciphertext without relying on
   later request traffic. A restart preserves the producing deployment/policy provenance alongside
@@ -149,7 +150,7 @@ Verification plan:
 
 DONE for the implementation contract.
 
-- `uv run pytest -q`: 72 passed, 1 skipped; the skipped check is the intentionally opt-in live
+- `uv run pytest -q`: 75 passed, 1 skipped; the skipped check is the intentionally opt-in live
   worker test.
 - `RUN_OLLAMA_SMOKE=1 GATEWAY_OLLAMA_MODEL=qwen3-30b-a3b:latest uv run pytest -q -m live
   tests/test_live_ollama.py`: 1 passed against the installed loopback Ollama model.
