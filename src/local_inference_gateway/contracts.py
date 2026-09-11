@@ -17,6 +17,23 @@ MAX_MESSAGE_CHARS = 500_000
 MAX_SCHEMA_BYTES = 250_000
 MAX_JSON_DEPTH = 32
 MAX_JSON_NODES = 20_000
+MAX_SCHEMA_ENUM_VALUES = 100
+SUPPORTED_SCHEMA_KEYWORDS = frozenset(
+    {
+        "additionalProperties",
+        "anyOf",
+        "default",
+        "enum",
+        "maxLength",
+        "maximum",
+        "minLength",
+        "minimum",
+        "properties",
+        "required",
+        "title",
+        "type",
+    }
+)
 UUID_V4_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 RFC3339_UTC_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
@@ -82,7 +99,7 @@ class Generation(ContractModel):
         if len(schema_bytes) > MAX_SCHEMA_BYTES:
             raise ValueError("response_schema exceeds its byte limit")
         _validate_json_shape(self.response_schema)
-        _validate_schema_references(self.response_schema)
+        _validate_supported_schema(self.response_schema)
         try:
             Draft202012Validator.check_schema(self.response_schema)
         except SchemaError as exc:
@@ -166,19 +183,44 @@ def _validate_json_shape(value: object) -> None:
             stack.extend((item, depth + 1) for item in current)
 
 
-def _validate_schema_references(schema: dict[str, Any]) -> None:
-    stack: list[object] = [schema]
-    while stack:
-        current = stack.pop()
-        if isinstance(current, dict):
-            for key, value in current.items():
-                if key in {"$ref", "$dynamicRef"} and (
-                    not isinstance(value, str) or not value.startswith("#")
-                ):
-                    raise ValueError("response_schema references must stay within the request")
-                stack.append(value)
-        elif isinstance(current, list):
-            stack.extend(current)
+def _validate_supported_schema(
+    schema: dict[str, Any], *, allow_nullable_any_of: bool = True
+) -> None:
+    unsupported = set(schema) - SUPPORTED_SCHEMA_KEYWORDS
+    if unsupported:
+        raise ValueError(f"response_schema uses unsupported keyword {sorted(unsupported)[0]!r}")
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        for child in properties.values():
+            if not isinstance(child, dict):
+                raise ValueError("response_schema properties must contain schemas")
+            _validate_supported_schema(child)
+    additional = schema.get("additionalProperties")
+    if additional is not None and not isinstance(additional, bool):
+        raise ValueError("response_schema additionalProperties must be boolean")
+    enum = schema.get("enum")
+    if enum is not None and (
+        not isinstance(enum, list)
+        or not 1 <= len(enum) <= MAX_SCHEMA_ENUM_VALUES
+        or any(isinstance(item, (dict, list)) for item in enum)
+    ):
+        raise ValueError("response_schema enum must contain bounded scalar values")
+    alternatives = schema.get("anyOf")
+    if alternatives is None:
+        return
+    if not allow_nullable_any_of or not isinstance(alternatives, list) or len(alternatives) != 2:
+        raise ValueError("response_schema anyOf must be one bounded nullable union")
+    null_branches = [item for item in alternatives if item == {"type": "null"}]
+    if len(null_branches) != 1:
+        raise ValueError("response_schema anyOf must contain one null branch")
+    non_null_branch = next(item for item in alternatives if item != {"type": "null"})
+    branch_type = non_null_branch.get("type") if isinstance(non_null_branch, dict) else None
+    if not isinstance(branch_type, str) or branch_type == "null":
+        raise ValueError("response_schema anyOf must contain one typed non-null branch")
+    for child in alternatives:
+        if not isinstance(child, dict):
+            raise ValueError("response_schema anyOf must contain schemas")
+        _validate_supported_schema(child, allow_nullable_any_of=False)
 
 
 def parse_json_object(raw: bytes) -> dict[str, object]:

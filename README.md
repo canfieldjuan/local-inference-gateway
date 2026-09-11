@@ -23,6 +23,10 @@ this first slice.
   maintenance task removes expired ciphertext even while the gateway is otherwise idle.
 - Exact retries replay one result. An attempt interrupted after worker submission remains ambiguous
   until expiry because Ollama provides no authoritative request-status lookup.
+- `email.analyze@1` accepts a deliberately bounded JSON Schema subset: scalar/object `type`,
+  `properties`, `required`, boolean `additionalProperties`, scalar `enum`, numeric/string bounds,
+  annotations, and one non-nested nullable `anyOf`. References, regex patterns, and open-ended
+  combinators are rejected before worker dispatch so validation cannot monopolize the worker lane.
 
 The public repository grants no access to a running gateway, its credentials, or private data. No
 software license has been selected yet.

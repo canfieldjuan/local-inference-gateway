@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
 
@@ -56,6 +58,24 @@ def test_valid_inference_is_reserved_once_and_replayed(gateway) -> None:  # type
     assert b"private generated result" not in database
     assert b"private email body" not in database
     assert TOKEN.encode() not in database
+
+
+def test_corrupt_retained_ciphertext_returns_stable_failure(gateway) -> None:  # type: ignore[no-untyped-def]
+    document = gateway.request()
+    completed = gateway.client.post("/v1/inference", headers=gateway.headers, json=document)
+    assert completed.status_code == 200
+    connection = sqlite3.connect(gateway.settings.database_path)
+    connection.execute(
+        "UPDATE inference_requests SET output_ciphertext = ? WHERE request_id = ?",
+        (b"corrupt", REQUEST_ID),
+    )
+    connection.commit()
+    connection.close()
+
+    replay = gateway.client.post("/v1/inference", headers=gateway.headers, json=document)
+
+    assert replay.status_code == 500
+    assert replay.json()["error"] == {"code": "invalid_worker_output", "retryable": False}
 
 
 def test_request_identity_collision_and_owner_isolation(gateway) -> None:  # type: ignore[no-untyped-def]
@@ -218,6 +238,22 @@ def test_expiry_boundaries_fail_before_dispatch(gateway) -> None:  # type: ignor
         gateway.client.post("/v1/inference", headers=gateway.headers, json=too_far).status_code
         == 422
     )
+    assert gateway.worker.calls == 0
+
+
+def test_unsupported_schema_evaluation_is_rejected_before_dispatch(gateway) -> None:  # type: ignore[no-untyped-def]
+    hostile = gateway.request()
+    hostile["generation"]["response_schema"] = {  # type: ignore[index]
+        "type": "object",
+        "properties": {"value": {"type": "string", "pattern": "(a+)+$"}},
+    }
+    dangling = deepcopy(hostile)
+    dangling["generation"]["response_schema"] = {"$ref": "#/missing"}  # type: ignore[index]
+
+    hostile_response = gateway.client.post("/v1/inference", headers=gateway.headers, json=hostile)
+    dangling_response = gateway.client.post("/v1/inference", headers=gateway.headers, json=dangling)
+
+    assert hostile_response.status_code == dangling_response.status_code == 422
     assert gateway.worker.calls == 0
 
 

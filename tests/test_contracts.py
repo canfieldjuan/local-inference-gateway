@@ -82,15 +82,46 @@ def test_contract_rejects_non_finite_json(gateway, number: bytes) -> None:  # ty
         InferenceRequest.model_validate(document)
 
 
-def test_contract_rejects_invalid_or_remote_response_schema(gateway) -> None:  # type: ignore[no-untyped-def]
+def test_contract_rejects_invalid_or_referencing_response_schema(gateway) -> None:  # type: ignore[no-untyped-def]
     invalid = gateway.request()
     invalid["generation"]["response_schema"] = {"type": 42}  # type: ignore[index]
-    remote = gateway.request()
-    remote["generation"]["response_schema"] = {  # type: ignore[index]
-        "$ref": "https://example.invalid/schema.json"
-    }
+    reference = gateway.request()
+    reference["generation"]["response_schema"] = {"$ref": "#/missing"}  # type: ignore[index]
 
     with pytest.raises(ValidationError, match="valid JSON Schema"):
         InferenceRequest.model_validate(invalid)
-    with pytest.raises(ValidationError, match="stay within the request"):
-        InferenceRequest.model_validate(remote)
+    with pytest.raises(ValidationError, match="unsupported keyword"):
+        InferenceRequest.model_validate(reference)
+
+
+def test_contract_allows_only_bounded_nullable_schema_composition(gateway) -> None:  # type: ignore[no-untyped-def]
+    accepted = gateway.request()
+    accepted["generation"]["response_schema"] = {  # type: ignore[index]
+        "type": "object",
+        "properties": {
+            "summary": {
+                "anyOf": [
+                    {"type": "string", "maxLength": 800},
+                    {"type": "null"},
+                ]
+            }
+        },
+        "required": ["summary"],
+        "additionalProperties": False,
+    }
+    hostile = gateway.request()
+    hostile["generation"]["response_schema"] = {  # type: ignore[index]
+        "type": "object",
+        "properties": {"summary": {"type": "string", "pattern": "(a+)+$"}},
+    }
+    non_scalar_enum = gateway.request()
+    non_scalar_enum["generation"]["response_schema"] = {  # type: ignore[index]
+        "type": "object",
+        "enum": [{"nested": "value"}],
+    }
+
+    InferenceRequest.model_validate(accepted)
+    with pytest.raises(ValidationError, match="unsupported keyword"):
+        InferenceRequest.model_validate(hostile)
+    with pytest.raises(ValidationError, match="bounded scalar"):
+        InferenceRequest.model_validate(non_scalar_enum)

@@ -10,6 +10,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import ClassVar, Literal
 
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .contracts import InferenceRequest
@@ -127,7 +128,7 @@ class ResultCipher:
                 self._aad(record),
             )
             return plaintext.decode("utf-8")
-        except (ValueError, UnicodeError) as exc:
+        except (InvalidTag, ValueError, UnicodeError) as exc:
             raise StoreError("encrypted output failed integrity verification") from exc
 
 
