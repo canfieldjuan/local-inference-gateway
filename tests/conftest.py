@@ -40,6 +40,7 @@ class FakeWorker:
         self.release.set()
         self.error: Exception | None = None
         self.before_return = None
+        self.result_content = '{"summary":"private generated result"}'
 
     def health(self) -> bool:
         return self.available
@@ -54,7 +55,7 @@ class FakeWorker:
             self.before_return()
         if self.error is not None:
             raise self.error
-        return WorkerResult("application/json", '{"summary":"private generated result"}')
+        return WorkerResult("application/json", self.result_content)
 
 
 @dataclass
@@ -105,7 +106,7 @@ def credential_store() -> CredentialStore:
     email = Credential(
         hashlib.sha256(b"email-watcher").hexdigest(),
         hashlib.sha256(TOKEN.encode("ascii")).hexdigest(),
-        frozenset({("email.analyze", 1)}),
+        frozenset({("email.analyze", 1), ("email.schedule.extract", 1)}),
     )
     other = Credential(
         hashlib.sha256(b"document-summarizer").hexdigest(),

@@ -18,17 +18,23 @@ MAX_SCHEMA_BYTES = 250_000
 MAX_JSON_DEPTH = 32
 MAX_JSON_NODES = 20_000
 MAX_SCHEMA_ENUM_VALUES = 100
+MAX_SCHEMA_ARRAY_ITEMS = 100
 MAX_FINITE_BINARY64 = Decimal("1.7976931348623157e308")
-SUPPORTED_SCHEMA_TYPES = frozenset({"boolean", "integer", "null", "number", "object", "string"})
+SUPPORTED_SCHEMA_TYPES = frozenset(
+    {"array", "boolean", "integer", "null", "number", "object", "string"}
+)
 SUPPORTED_SCHEMA_KEYWORDS = frozenset(
     {
         "additionalProperties",
         "anyOf",
         "default",
         "enum",
+        "items",
         "maxLength",
+        "maxItems",
         "maximum",
         "minLength",
+        "minItems",
         "minimum",
         "properties",
         "required",
@@ -191,10 +197,25 @@ def _validate_supported_schema(
         for child in properties.values():
             if not isinstance(child, dict):
                 raise ValueError("response_schema properties must contain schemas")
-            _validate_supported_schema(child)
+            _validate_supported_schema(child, allow_nullable_any_of=allow_nullable_any_of)
     additional = schema.get("additionalProperties")
     if additional is not None and not isinstance(additional, bool):
         raise ValueError("response_schema additionalProperties must be boolean")
+    item_schema = schema.get("items")
+    min_items = schema.get("minItems")
+    max_items = schema.get("maxItems")
+    if schema_type == "array":
+        if not isinstance(item_schema, dict):
+            raise ValueError("response_schema arrays must contain one item schema")
+        if type(max_items) is not int or not 0 <= max_items <= MAX_SCHEMA_ARRAY_ITEMS:
+            raise ValueError("response_schema arrays must have a bounded maxItems")
+        if min_items is not None and (
+            type(min_items) is not int or not 0 <= min_items <= max_items
+        ):
+            raise ValueError("response_schema array minItems is invalid")
+        _validate_supported_schema(item_schema, allow_nullable_any_of=allow_nullable_any_of)
+    elif item_schema is not None or min_items is not None or max_items is not None:
+        raise ValueError("response_schema array keywords require array type")
     enum = schema.get("enum")
     if enum is not None and (
         not isinstance(enum, list)

@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from types import MappingProxyType
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -42,8 +43,20 @@ from .worker import (
     WorkerUnavailable,
 )
 
-SUPPORTED_TASK = ("email.analyze", 1)
 TASK_POLICY_VERSION = 1
+
+
+@dataclass(frozen=True)
+class TaskPolicy:
+    temperature: float
+
+
+TASK_POLICIES = MappingProxyType(
+    {
+        ("email.analyze", 1): TaskPolicy(temperature=0.1),
+        ("email.schedule.extract", 1): TaskPolicy(temperature=0.1),
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -76,17 +89,17 @@ class GatewayService:
         self._active: _ActiveAttempt | None = None
 
     def health(self, credential: Credential) -> dict[str, object]:
-        tasks: list[dict[str, object]] = []
-        if SUPPORTED_TASK in credential.tasks:
-            available = self.worker.health()
-            tasks.append(
-                {
-                    "id": SUPPORTED_TASK[0],
-                    "version": SUPPORTED_TASK[1],
-                    "status": "available" if available else "unavailable",
-                    "diagnostic_code": "ready" if available else "worker_unavailable",
-                }
-            )
+        authorized_tasks = sorted(task for task in TASK_POLICIES if task in credential.tasks)
+        available = self.worker.health() if authorized_tasks else False
+        tasks = [
+            {
+                "id": task_id,
+                "version": task_version,
+                "status": "available" if available else "unavailable",
+                "diagnostic_code": "ready" if available else "worker_unavailable",
+            }
+            for task_id, task_version in authorized_tasks
+        ]
         return {"protocol_version": PROTOCOL_VERSION, "tasks": tasks}
 
     def infer(self, credential: Credential, request: InferenceRequest) -> dict[str, object]:
@@ -228,14 +241,15 @@ class GatewayService:
         task = (request.task.id, request.task.version)
         if task not in credential.tasks:
             raise GatewayFailure("forbidden", False, 403)
-        if task != SUPPORTED_TASK:
+        policy = TASK_POLICIES.get(task)
+        if policy is None:
             raise GatewayFailure("unsupported_task", False, 422)
         lifetime = (request.expires_at - now).total_seconds()
         if lifetime <= 0:
             raise GatewayFailure("request_expired", False, 409)
         if lifetime > self.settings.request_max_lifetime_seconds:
             raise GatewayFailure("invalid_request", False, 422)
-        if request.generation.temperature != 0.1:
+        if request.generation.temperature != policy.temperature:
             raise GatewayFailure("unsupported_task", False, 422)
 
     def _existing_response(self, record: RequestRecord) -> dict[str, object] | None:

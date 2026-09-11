@@ -170,7 +170,98 @@ def test_contract_allows_only_bounded_nullable_schema_composition(gateway) -> No
         InferenceRequest.model_validate(non_scalar_enum)
 
 
-@pytest.mark.parametrize("schema_type", ["array", ["string", "null"]])
+@pytest.mark.parametrize("max_items", [0, 100])
+def test_contract_accepts_bounded_array_limits(gateway, max_items: int) -> None:  # type: ignore[no-untyped-def]
+    document = gateway.request()
+    document["generation"]["response_schema"] = {  # type: ignore[index]
+        "type": "object",
+        "properties": {
+            "values": {
+                "type": "array",
+                "items": {"type": "string", "maxLength": 20},
+                "minItems": 0,
+                "maxItems": max_items,
+            }
+        },
+    }
+
+    InferenceRequest.model_validate(document)
+
+
+@pytest.mark.parametrize(
+    ("array_schema", "message"),
+    [
+        ({"type": "array", "maxItems": 1}, "one item schema"),
+        ({"type": "array", "items": [{"type": "string"}], "maxItems": 1}, "one item schema"),
+        ({"type": "array", "items": {"type": "string"}}, "bounded maxItems"),
+        ({"type": "array", "items": {"type": "string"}, "maxItems": True}, "bounded maxItems"),
+        ({"type": "array", "items": {"type": "string"}, "maxItems": 101}, "bounded maxItems"),
+        (
+            {"type": "array", "items": {"type": "string"}, "minItems": -1, "maxItems": 1},
+            "minItems is invalid",
+        ),
+        (
+            {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 1},
+            "minItems is invalid",
+        ),
+        ({"type": "string", "items": {"type": "string"}, "maxItems": 1}, "require array"),
+    ],
+)
+def test_contract_rejects_unbounded_or_malformed_arrays(
+    gateway,
+    array_schema: dict[str, object],
+    message: str,  # type: ignore[no-untyped-def]
+) -> None:
+    document = gateway.request()
+    document["generation"]["response_schema"] = {  # type: ignore[index]
+        "type": "object",
+        "properties": {"values": array_schema},
+    }
+
+    with pytest.raises(ValidationError, match=message):
+        InferenceRequest.model_validate(document)
+
+
+@pytest.mark.parametrize("container_type", ["array", "object"])
+def test_contract_array_or_object_recursion_cannot_reset_nullable_union_guard(
+    gateway,
+    container_type: str,  # type: ignore[no-untyped-def]
+) -> None:
+    nested_nullable = {
+        "anyOf": [
+            {"type": "string", "maxLength": 20},
+            {"type": "null"},
+        ]
+    }
+    if container_type == "array":
+        non_null_branch = {
+            "type": "array",
+            "items": nested_nullable,
+            "maxItems": 4,
+        }
+    else:
+        non_null_branch = {
+            "type": "object",
+            "properties": {"nested": nested_nullable},
+        }
+    document = gateway.request()
+    document["generation"]["response_schema"] = {  # type: ignore[index]
+        "type": "object",
+        "properties": {
+            "value": {
+                "anyOf": [
+                    non_null_branch,
+                    {"type": "null"},
+                ]
+            }
+        },
+    }
+
+    with pytest.raises(ValidationError, match="one bounded nullable union"):
+        InferenceRequest.model_validate(document)
+
+
+@pytest.mark.parametrize("schema_type", [["string", "null"]])
 def test_contract_rejects_unsupported_nested_schema_types(
     gateway,
     schema_type: object,  # type: ignore[no-untyped-def]
