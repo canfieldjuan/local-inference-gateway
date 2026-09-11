@@ -4,10 +4,10 @@ A private, on-prem inference boundary for Local Connect applications. Applicatio
 versioned task; the gateway owns worker selection and model identity. This keeps application code
 independent of Ollama, LM Studio, GPU placement, and future runtime changes.
 
-Current milestone: authenticated, durable `email.analyze@1` and `email.schedule.extract@1`
-lifecycles backed by Ollama, with an explicit TLS-only private-LAN listener for a single-process
-Linux appliance. LM Studio fallback, remaining application cutovers, certificate automation, and
-public-Internet deployment remain deferred.
+Current milestone: authenticated, durable `email.analyze@1`, `email.schedule.extract@1`, and
+`document.summary.step@1` lifecycles backed by Ollama, with an explicit TLS-only private-LAN
+listener for a single-process Linux appliance. LM Studio fallback, remaining application cutovers,
+certificate automation, and public-Internet deployment remain deferred.
 
 ## Security model
 
@@ -25,12 +25,16 @@ public-Internet deployment remain deferred.
   maintenance task removes expired ciphertext even while the gateway is otherwise idle.
 - Exact retries replay one result. An attempt interrupted after worker submission remains ambiguous
   until expiry because Ollama provides no authoritative request-status lookup.
-- Task response schemas require an object root and accept a deliberately bounded nested subset:
+- Task response schemas accept an object root and a deliberately bounded nested subset:
   scalar/object/array `type`, `properties`, single-schema `items`, explicit capped `maxItems`,
   `required`, boolean `additionalProperties`, scalar `enum`, numeric/string bounds, annotations,
-  and one non-nested nullable `anyOf`. References, tuple or unbounded arrays, regex patterns, and
-  open-ended combinators are rejected before worker dispatch so validation cannot monopolize the
-  worker lane.
+  and one non-nested nullable `anyOf`. The document task additionally admits one root `anyOf` with
+  2 through 64 closed object branches. References, nested object choices, open branches, tuple or
+  unbounded arrays, regex patterns, and open-ended combinators are rejected before worker dispatch
+  so validation cannot monopolize the worker lane.
+- Output-token admission is task-specific: the Email Watcher tasks remain capped at 1,500 and the
+  document summary step is capped at 4,096. Raising the parser's global ceiling does not grant a
+  credential more capacity for another task.
 - Worker JSON rejects duplicate object keys and integer or fractional numbers outside the supported
   finite-binary64 range. Schema and output numbers share one exact validation domain, and
   token-limited completions are never persisted as successful results.
@@ -60,8 +64,10 @@ without printing either value:
 install -d -m 700 "$HOME/.local/state/local-inference-gateway"
 umask 077
 python -c 'from pathlib import Path; import secrets; (Path.home() / ".local/state/local-inference-gateway/email-watcher.token").write_text(secrets.token_hex(32), encoding="ascii")'
+python -c 'from pathlib import Path; import secrets; (Path.home() / ".local/state/local-inference-gateway/document-summarizer.token").write_text(secrets.token_hex(32), encoding="ascii")'
 openssl rand -base64 32 > "$HOME/.local/state/local-inference-gateway/result.key"
 sha256sum "$HOME/.local/state/local-inference-gateway/email-watcher.token"
+sha256sum "$HOME/.local/state/local-inference-gateway/document-summarizer.token"
 ```
 
 Copy only the printed digest into an owner-private credential file:
@@ -76,6 +82,13 @@ Copy only the printed digest into an owner-private credential file:
       "tasks": [
         {"id": "email.analyze", "version": 1},
         {"id": "email.schedule.extract", "version": 1}
+      ]
+    },
+    {
+      "id": "document-summarizer",
+      "token_sha256": "<different 64-character lowercase SHA-256 digest>",
+      "tasks": [
+        {"id": "document.summary.step", "version": 1}
       ]
     }
   ]

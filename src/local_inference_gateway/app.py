@@ -19,6 +19,7 @@ from .contracts import (
     PROTOCOL_VERSION,
     AcknowledgementRequest,
     InferenceRequest,
+    is_bounded_root_object_choice,
     parse_json_object,
     safe_request_id,
 )
@@ -49,12 +50,22 @@ TASK_POLICY_VERSION = 1
 @dataclass(frozen=True)
 class TaskPolicy:
     temperature: float
+    max_output_tokens: int
+    allow_root_object_choice: bool = False
 
 
 TASK_POLICIES = MappingProxyType(
     {
-        ("email.analyze", 1): TaskPolicy(temperature=0.1),
-        ("email.schedule.extract", 1): TaskPolicy(temperature=0.1),
+        ("document.summary.step", 1): TaskPolicy(
+            temperature=0.0,
+            max_output_tokens=4_096,
+            allow_root_object_choice=True,
+        ),
+        ("email.analyze", 1): TaskPolicy(temperature=0.1, max_output_tokens=1_500),
+        ("email.schedule.extract", 1): TaskPolicy(
+            temperature=0.1,
+            max_output_tokens=1_500,
+        ),
     }
 )
 
@@ -250,6 +261,13 @@ class GatewayService:
         if lifetime > self.settings.request_max_lifetime_seconds:
             raise GatewayFailure("invalid_request", False, 422)
         if request.generation.temperature != policy.temperature:
+            raise GatewayFailure("unsupported_task", False, 422)
+        if request.requirements.max_output_tokens > policy.max_output_tokens:
+            raise GatewayFailure("unsupported_task", False, 422)
+        if (
+            is_bounded_root_object_choice(request.generation.response_schema)
+            and not policy.allow_root_object_choice
+        ):
             raise GatewayFailure("unsupported_task", False, 422)
 
     def _existing_response(self, record: RequestRecord) -> dict[str, object] | None:

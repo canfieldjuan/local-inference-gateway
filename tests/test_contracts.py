@@ -170,6 +170,92 @@ def test_contract_allows_only_bounded_nullable_schema_composition(gateway) -> No
         InferenceRequest.model_validate(non_scalar_enum)
 
 
+def closed_object_choice_branch(value: int) -> dict[str, object]:
+    return {
+        "type": "object",
+        "properties": {"choice": {"type": "integer", "enum": [value]}},
+        "required": ["choice"],
+        "additionalProperties": False,
+    }
+
+
+@pytest.mark.parametrize("branch_count", [2, 64])
+def test_contract_accepts_bounded_root_object_choices(gateway, branch_count: int) -> None:  # type: ignore[no-untyped-def]
+    document = gateway.request()
+    document["generation"]["response_schema"] = {  # type: ignore[index]
+        "anyOf": [closed_object_choice_branch(value) for value in range(branch_count)]
+    }
+
+    InferenceRequest.model_validate(document)
+
+
+@pytest.mark.parametrize(
+    ("schema", "message"),
+    [
+        ({"anyOf": [closed_object_choice_branch(0)]}, "2 through 64"),
+        (
+            {"anyOf": [closed_object_choice_branch(value) for value in range(65)]},
+            "2 through 64",
+        ),
+        (
+            {"anyOf": [closed_object_choice_branch(0), {"type": "string"}]},
+            "closed object branches",
+        ),
+        (
+            {
+                "anyOf": [
+                    closed_object_choice_branch(0),
+                    {"type": "object", "properties": {"value": {"type": "string"}}},
+                ]
+            },
+            "closed object branches",
+        ),
+        (
+            {
+                "type": "object",
+                "anyOf": [closed_object_choice_branch(0), closed_object_choice_branch(1)],
+            },
+            "closed object branches",
+        ),
+    ],
+)
+def test_contract_rejects_unbounded_or_open_root_object_choices(
+    gateway,
+    schema: dict[str, object],
+    message: str,  # type: ignore[no-untyped-def]
+) -> None:
+    document = gateway.request()
+    document["generation"]["response_schema"] = schema  # type: ignore[index]
+
+    with pytest.raises(ValidationError, match=message):
+        InferenceRequest.model_validate(document)
+
+
+def test_contract_rejects_nested_non_nullable_object_choices(gateway) -> None:  # type: ignore[no-untyped-def]
+    document = gateway.request()
+    document["generation"]["response_schema"] = {  # type: ignore[index]
+        "type": "object",
+        "properties": {
+            "choice": {"anyOf": [closed_object_choice_branch(0), closed_object_choice_branch(1)]}
+        },
+        "additionalProperties": False,
+    }
+
+    with pytest.raises(ValidationError, match="must contain one null branch"):
+        InferenceRequest.model_validate(document)
+
+
+def test_contract_caps_global_output_tokens_at_document_boundary(gateway) -> None:  # type: ignore[no-untyped-def]
+    at_limit = gateway.request()
+    at_limit["requirements"]["max_output_tokens"] = 4_096  # type: ignore[index]
+    above_limit = gateway.request()
+    above_limit["requirements"]["max_output_tokens"] = 4_097  # type: ignore[index]
+
+    InferenceRequest.model_validate(at_limit)
+    with pytest.raises(ValidationError):
+        InferenceRequest.model_validate(above_limit)
+
+
 @pytest.mark.parametrize("max_items", [0, 100])
 def test_contract_accepts_bounded_array_limits(gateway, max_items: int) -> None:  # type: ignore[no-untyped-def]
     document = gateway.request()

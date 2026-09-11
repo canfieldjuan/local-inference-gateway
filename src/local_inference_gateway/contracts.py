@@ -19,6 +19,8 @@ MAX_JSON_DEPTH = 32
 MAX_JSON_NODES = 20_000
 MAX_SCHEMA_ENUM_VALUES = 100
 MAX_SCHEMA_ARRAY_ITEMS = 100
+MAX_SCHEMA_OBJECT_CHOICES = 64
+MAX_OUTPUT_TOKENS = 4_096
 MAX_FINITE_BINARY64 = Decimal("1.7976931348623157e308")
 SUPPORTED_SCHEMA_TYPES = frozenset(
     {"array", "boolean", "integer", "null", "number", "object", "string"}
@@ -71,7 +73,7 @@ class Requirements(ContractModel):
     input_modalities: list[Literal["text"]] = Field(min_length=1, max_length=1)
     output_media_type: Literal["application/json"]
     structured_output: Literal[True]
-    max_output_tokens: int = Field(ge=1, le=1_500)
+    max_output_tokens: int = Field(ge=1, le=MAX_OUTPUT_TOKENS)
 
     @field_validator("input_modalities")
     @classmethod
@@ -101,13 +103,17 @@ class Generation(ContractModel):
         if len(schema_bytes) > MAX_SCHEMA_BYTES:
             raise ValueError("response_schema exceeds its byte limit")
         _validate_json_shape(self.response_schema)
-        _validate_supported_schema(self.response_schema)
+        _validate_supported_schema(self.response_schema, allow_root_object_choice=True)
         try:
             Draft202012Validator.check_schema(self.response_schema)
         except SchemaError as exc:
             raise ValueError("response_schema is not valid JSON Schema") from exc
-        if self.response_schema.get("type") != "object":
-            raise ValueError("response_schema root type must be object")
+        if self.response_schema.get("type") != "object" and not is_bounded_root_object_choice(
+            self.response_schema
+        ):
+            raise ValueError(
+                "response_schema root must be an object or one bounded closed-object choice"
+            )
         return self
 
 
@@ -182,7 +188,10 @@ def _validate_json_shape(value: object) -> None:
 
 
 def _validate_supported_schema(
-    schema: dict[str, Any], *, allow_nullable_any_of: bool = True
+    schema: dict[str, Any],
+    *,
+    allow_nullable_any_of: bool = True,
+    allow_root_object_choice: bool = False,
 ) -> None:
     unsupported = set(schema) - SUPPORTED_SCHEMA_KEYWORDS
     if unsupported:
@@ -230,6 +239,17 @@ def _validate_supported_schema(
     alternatives = schema.get("anyOf")
     if alternatives is None:
         return
+    if allow_root_object_choice and (
+        not isinstance(alternatives, list)
+        or not any(item == {"type": "null"} for item in alternatives)
+    ):
+        if not is_bounded_root_object_choice(schema):
+            raise ValueError(
+                "response_schema root choice must contain 2 through 64 closed object branches"
+            )
+        for child in alternatives:
+            _validate_supported_schema(child)
+        return
     if not allow_nullable_any_of or not isinstance(alternatives, list) or len(alternatives) != 2:
         raise ValueError("response_schema anyOf must be one bounded nullable union")
     null_branches = [item for item in alternatives if item == {"type": "null"}]
@@ -243,6 +263,21 @@ def _validate_supported_schema(
         if not isinstance(child, dict):
             raise ValueError("response_schema anyOf must contain schemas")
         _validate_supported_schema(child, allow_nullable_any_of=False)
+
+
+def is_bounded_root_object_choice(schema: dict[str, Any]) -> bool:
+    alternatives = schema.get("anyOf")
+    return (
+        set(schema) == {"anyOf"}
+        and isinstance(alternatives, list)
+        and 2 <= len(alternatives) <= MAX_SCHEMA_OBJECT_CHOICES
+        and all(
+            isinstance(branch, dict)
+            and branch.get("type") == "object"
+            and branch.get("additionalProperties") is False
+            for branch in alternatives
+        )
+    )
 
 
 def parse_json_object(raw: bytes) -> dict[str, object]:

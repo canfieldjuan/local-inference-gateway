@@ -42,7 +42,17 @@ def test_liveness_and_scoped_health_disclose_no_worker_details(gateway) -> None:
             },
         ],
     }
-    assert other.json() == {"protocol_version": 1, "tasks": []}
+    assert other.json() == {
+        "protocol_version": 1,
+        "tasks": [
+            {
+                "id": "document.summary.step",
+                "version": 1,
+                "status": "available",
+                "diagnostic_code": "ready",
+            }
+        ],
+    }
     encoded = json.dumps([live.json(), health.json(), other.json()])
     assert "ollama" not in encoded.casefold()
     assert "qwen" not in encoded.casefold()
@@ -102,6 +112,110 @@ def test_scheduling_task_uses_existing_durable_lifecycle(gateway) -> None:  # ty
     assert completed.status_code == 200
     assert completed.json()["provenance"]["task_policy_version"] == 1
     assert acknowledgement.status_code == 200
+    assert gateway.worker.calls == 1
+
+
+def test_document_summary_step_uses_existing_durable_lifecycle(gateway) -> None:  # type: ignore[no-untyped-def]
+    gateway.worker.result_content = '{"claims":[{"text":"Bounded summary."}]}'
+    document = gateway.request()
+    document["task"] = {"id": "document.summary.step", "version": 1}
+    document["requirements"]["max_output_tokens"] = 4_096  # type: ignore[index]
+    document["generation"]["temperature"] = 0.0  # type: ignore[index]
+    document["generation"]["response_schema"] = {  # type: ignore[index]
+        "anyOf": [
+            {
+                "type": "object",
+                "properties": {
+                    "claims": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "text": {"type": "string", "minLength": 1, "maxLength": 1_536}
+                            },
+                            "required": ["text"],
+                            "additionalProperties": False,
+                        },
+                        "minItems": 1,
+                        "maxItems": 1,
+                    }
+                },
+                "required": ["claims"],
+                "additionalProperties": False,
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "claims": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "text": {"type": "string", "minLength": 1, "maxLength": 1_536}
+                            },
+                            "required": ["text"],
+                            "additionalProperties": False,
+                        },
+                        "minItems": 2,
+                        "maxItems": 2,
+                    }
+                },
+                "required": ["claims"],
+                "additionalProperties": False,
+            },
+        ]
+    }
+
+    completed = gateway.client.post("/v1/inference", headers=gateway.other_headers, json=document)
+    acknowledgement = gateway.client.post(
+        f"/v1/inference/{REQUEST_ID}/ack",
+        headers=gateway.other_headers,
+        json={
+            "protocol_version": 1,
+            "request_id": REQUEST_ID,
+            "disposition": "persisted",
+        },
+    )
+
+    assert completed.status_code == 200
+    assert completed.json()["provenance"]["task_policy_version"] == 1
+    assert acknowledgement.status_code == 200
+    assert gateway.worker.calls == 1
+
+
+def test_task_specific_output_and_schema_policy_fail_before_dispatch(gateway) -> None:  # type: ignore[no-untyped-def]
+    email_too_large = gateway.request()
+    email_too_large["requirements"]["max_output_tokens"] = 1_501  # type: ignore[index]
+    email_choice = gateway.request(request_id="22345678-1234-4234-8234-123456789abc")
+    email_choice["generation"]["response_schema"] = {  # type: ignore[index]
+        "anyOf": [
+            {"type": "object", "additionalProperties": False},
+            {
+                "type": "object",
+                "properties": {"value": {"type": "string", "maxLength": 20}},
+                "additionalProperties": False,
+            },
+        ]
+    }
+    document_at_limit = gateway.request(request_id="32345678-1234-4234-8234-123456789abc")
+    document_at_limit["task"] = {"id": "document.summary.step", "version": 1}
+    document_at_limit["requirements"]["max_output_tokens"] = 4_096  # type: ignore[index]
+    document_at_limit["generation"]["temperature"] = 0.0  # type: ignore[index]
+
+    rejected_output = gateway.client.post(
+        "/v1/inference", headers=gateway.headers, json=email_too_large
+    )
+    rejected_choice = gateway.client.post(
+        "/v1/inference", headers=gateway.headers, json=email_choice
+    )
+    accepted_document = gateway.client.post(
+        "/v1/inference", headers=gateway.other_headers, json=document_at_limit
+    )
+
+    assert rejected_output.status_code == rejected_choice.status_code == 422
+    assert rejected_output.json()["error"]["code"] == "unsupported_task"
+    assert rejected_choice.json()["error"]["code"] == "unsupported_task"
+    assert accepted_document.status_code == 200
     assert gateway.worker.calls == 1
 
 
