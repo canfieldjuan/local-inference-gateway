@@ -13,6 +13,14 @@ def main() -> None:
         host=settings.bind_host,
         port=settings.bind_port,
         access_log=True,
+        proxy_headers=False,
+        workers=1,
+        ssl_certfile=(
+            str(settings.tls_certificate_path)
+            if settings.tls_certificate_path is not None
+            else None
+        ),
+        ssl_keyfile=str(settings.tls_key_path) if settings.tls_key_path is not None else None,
     )
 
 
