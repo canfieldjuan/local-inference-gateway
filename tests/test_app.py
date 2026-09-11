@@ -9,6 +9,7 @@ from datetime import timedelta
 from fastapi.testclient import TestClient
 
 from local_inference_gateway.app import create_app
+from local_inference_gateway.contracts import InferenceRequest
 from local_inference_gateway.store import RequestStore
 from local_inference_gateway.worker import WorkerOutcomeAmbiguous, WorkerUnavailable
 from tests.conftest import OTHER_TOKEN, REQUEST_ID, TOKEN, FakeWorker, build_harness
@@ -129,6 +130,33 @@ def test_exact_concurrent_repeat_joins_one_worker_call(tmp_path) -> None:  # typ
 
     assert first_response.status_code == repeat_response.status_code == 200
     assert first_response.json() == repeat_response.json()
+    assert worker.calls == 1
+
+
+def test_stale_in_progress_read_reloads_completed_result_after_lane_clears(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    worker = FakeWorker()
+    worker.release.clear()
+    gateway = build_harness(tmp_path, worker=worker)
+    document = gateway.request()
+    request = InferenceRequest.model_validate(document)
+    credential = gateway.credentials.authenticate(TOKEN)
+    assert credential is not None
+    digest = request.canonical_digest()
+    service = gateway.client.app.state.gateway_service
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        first = pool.submit(service.infer, credential, request)
+        assert worker.started.wait(2)
+        stale = gateway.store.get_owned(
+            request.request_id, credential.identity_hash, digest, gateway.clock()
+        )
+        assert stale.state == "in_progress"
+        worker.release.set()
+        completed = first.result(timeout=5)
+
+    replay = service._join_active(stale, credential, digest)
+
+    assert replay == completed
     assert worker.calls == 1
 
 

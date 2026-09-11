@@ -285,7 +285,7 @@ class GatewayService:
         with self._lane_lock:
             active = self._active
         if active is None or active.request_id != record.request_id:
-            raise GatewayFailure("inference_timeout", True, 504, self.settings.retry_after_seconds)
+            return self._reload_after_attempt(record.request_id, credential, digest)
         return self._wait_and_reload(active, credential, digest, record.expires_at)
 
     def _wait_and_reload(
@@ -301,9 +301,15 @@ class GatewayService:
         )
         if not active.finished.wait(remaining):
             raise GatewayFailure("inference_timeout", True, 504, self.settings.retry_after_seconds)
-        record = self.store.get_owned(
-            active.request_id, credential.identity_hash, digest, self.clock()
-        )
+        return self._reload_after_attempt(active.request_id, credential, digest)
+
+    def _reload_after_attempt(
+        self,
+        request_id: str,
+        credential: Credential,
+        digest: str,
+    ) -> dict[str, object]:
+        record = self.store.get_owned(request_id, credential.identity_hash, digest, self.clock())
         response = self._existing_response(record)
         if response is not None:
             return response
