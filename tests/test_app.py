@@ -33,7 +33,13 @@ def test_liveness_and_scoped_health_disclose_no_worker_details(gateway) -> None:
                 "version": 1,
                 "status": "available",
                 "diagnostic_code": "ready",
-            }
+            },
+            {
+                "id": "email.schedule.extract",
+                "version": 1,
+                "status": "available",
+                "diagnostic_code": "ready",
+            },
         ],
     }
     assert other.json() == {"protocol_version": 1, "tasks": []}
@@ -41,6 +47,79 @@ def test_liveness_and_scoped_health_disclose_no_worker_details(gateway) -> None:
     assert "ollama" not in encoded.casefold()
     assert "qwen" not in encoded.casefold()
     assert TOKEN not in encoded and OTHER_TOKEN not in encoded
+
+
+def test_scheduling_task_uses_existing_durable_lifecycle(gateway) -> None:  # type: ignore[no-untyped-def]
+    gateway.worker.result_content = json.dumps(
+        {
+            "intent": "unclear",
+            "evidence": [{"source": "body", "quote": "perhaps next week"}],
+            "ambiguity_reasons": ["No exact time was provided."],
+        }
+    )
+    document = gateway.request()
+    document["task"] = {"id": "email.schedule.extract", "version": 1}
+    document["requirements"]["max_output_tokens"] = 1_500  # type: ignore[index]
+    document["generation"]["response_schema"] = {  # type: ignore[index]
+        "type": "object",
+        "properties": {
+            "intent": {"type": "string", "enum": ["new_meeting", "unclear"]},
+            "evidence": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "source": {"type": "string", "enum": ["body", "subject"]},
+                        "quote": {"type": "string", "minLength": 1, "maxLength": 500},
+                    },
+                    "required": ["source", "quote"],
+                    "additionalProperties": False,
+                },
+                "minItems": 1,
+                "maxItems": 4,
+            },
+            "ambiguity_reasons": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1, "maxLength": 300},
+                "maxItems": 8,
+            },
+        },
+        "required": ["intent", "evidence", "ambiguity_reasons"],
+        "additionalProperties": False,
+    }
+
+    completed = gateway.client.post("/v1/inference", headers=gateway.headers, json=document)
+    acknowledgement = gateway.client.post(
+        f"/v1/inference/{REQUEST_ID}/ack",
+        headers=gateway.headers,
+        json={
+            "protocol_version": 1,
+            "request_id": REQUEST_ID,
+            "disposition": "persisted",
+        },
+    )
+
+    assert completed.status_code == 200
+    assert completed.json()["provenance"]["task_policy_version"] == 1
+    assert acknowledgement.status_code == 200
+    assert gateway.worker.calls == 1
+
+
+def test_task_policy_does_not_grant_or_implement_undeclared_tasks(gateway) -> None:  # type: ignore[no-untyped-def]
+    scheduling = gateway.request()
+    scheduling["task"] = {"id": "email.schedule.extract", "version": 1}
+    unauthorized = gateway.client.post(
+        "/v1/inference", headers=gateway.other_headers, json=scheduling
+    )
+    document = gateway.request()
+    document["task"] = {"id": "document.chunk.summarize", "version": 1}
+    unsupported = gateway.client.post("/v1/inference", headers=gateway.other_headers, json=document)
+
+    assert unauthorized.status_code == 403
+    assert unauthorized.json()["error"]["code"] == "forbidden"
+    assert unsupported.status_code == 422
+    assert unsupported.json()["error"]["code"] == "unsupported_task"
+    assert gateway.worker.calls == 0
 
 
 def test_valid_inference_is_reserved_once_and_replayed(gateway) -> None:  # type: ignore[no-untyped-def]

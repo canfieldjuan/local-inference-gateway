@@ -136,6 +136,34 @@ def test_worker_rejects_json_that_does_not_match_declared_schema(gateway) -> Non
         worker.infer(InferenceRequest.model_validate(document), 30)
 
 
+def test_worker_rejects_array_items_that_do_not_match_declared_schema(gateway) -> None:  # type: ignore[no-untyped-def]
+    document = gateway.request()
+    document["generation"]["response_schema"] = {  # type: ignore[index]
+        "type": "object",
+        "properties": {
+            "evidence": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"quote": {"type": "string", "maxLength": 500}},
+                    "required": ["quote"],
+                    "additionalProperties": False,
+                },
+                "maxItems": 4,
+            }
+        },
+        "required": ["evidence"],
+        "additionalProperties": False,
+    }
+    body = json.dumps(
+        {"choices": [{"message": {"content": '{"evidence":[{"wrong":true}]}'}}]}
+    ).encode()
+    worker = worker_with_handler(lambda request: httpx.Response(200, stream=httpx.ByteStream(body)))
+
+    with pytest.raises(InvalidWorkerOutput, match="response schema"):
+        worker.infer(InferenceRequest.model_validate(document), 30)
+
+
 def test_worker_validates_generated_numbers_without_binary_float_rounding(gateway) -> None:  # type: ignore[no-untyped-def]
     document = gateway.request()
     document["generation"]["response_schema"] = {  # type: ignore[index]

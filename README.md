@@ -4,9 +4,10 @@ A private, on-prem inference boundary for Local Connect applications. Applicatio
 versioned task; the gateway owns worker selection and model identity. This keeps application code
 independent of Ollama, LM Studio, GPU placement, and future runtime changes.
 
-Current milestone: one authenticated, durable `email.analyze@1` lifecycle backed by Ollama, with an
-explicit TLS-only private-LAN listener for a single-process Linux appliance. LM Studio fallback,
-application cutover, certificate automation, and public-Internet deployment remain deferred.
+Current milestone: authenticated, durable `email.analyze@1` and `email.schedule.extract@1`
+lifecycles backed by Ollama, with an explicit TLS-only private-LAN listener for a single-process
+Linux appliance. LM Studio fallback, remaining application cutovers, certificate automation, and
+public-Internet deployment remain deferred.
 
 ## Security model
 
@@ -24,11 +25,12 @@ application cutover, certificate automation, and public-Internet deployment rema
   maintenance task removes expired ciphertext even while the gateway is otherwise idle.
 - Exact retries replay one result. An attempt interrupted after worker submission remains ambiguous
   until expiry because Ollama provides no authoritative request-status lookup.
-- `email.analyze@1` requires an object-root JSON Schema and accepts a deliberately bounded nested
-  subset: scalar/object `type`, `properties`, `required`, boolean `additionalProperties`, scalar
-  `enum`, numeric/string bounds, annotations, and one non-nested nullable `anyOf`. References,
-  regex patterns, and open-ended combinators are rejected before worker dispatch so validation
-  cannot monopolize the worker lane.
+- Task response schemas require an object root and accept a deliberately bounded nested subset:
+  scalar/object/array `type`, `properties`, single-schema `items`, explicit capped `maxItems`,
+  `required`, boolean `additionalProperties`, scalar `enum`, numeric/string bounds, annotations,
+  and one non-nested nullable `anyOf`. References, tuple or unbounded arrays, regex patterns, and
+  open-ended combinators are rejected before worker dispatch so validation cannot monopolize the
+  worker lane.
 - Worker JSON rejects duplicate object keys and integer or fractional numbers outside the supported
   finite-binary64 range. Schema and output numbers share one exact validation domain, and
   token-limited completions are never persisted as successful results.
@@ -71,7 +73,10 @@ Copy only the printed digest into an owner-private credential file:
     {
       "id": "email-watcher",
       "token_sha256": "<64-character lowercase SHA-256 digest>",
-      "tasks": [{"id": "email.analyze", "version": 1}]
+      "tasks": [
+        {"id": "email.analyze", "version": 1},
+        {"id": "email.schedule.extract", "version": 1}
+      ]
     }
   ]
 }
