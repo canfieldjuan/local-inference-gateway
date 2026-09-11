@@ -6,7 +6,7 @@ from copy import deepcopy
 import pytest
 from pydantic import ValidationError
 
-from local_inference_gateway.contracts import InferenceRequest, parse_json_object
+from local_inference_gateway.contracts import InferenceRequest, encode_json_bytes, parse_json_object
 
 
 def test_canonical_digest_is_stable_for_key_order(gateway) -> None:  # type: ignore[no-untyped-def]
@@ -17,6 +17,31 @@ def test_canonical_digest_is_stable_for_key_order(gateway) -> None:  # type: ign
         InferenceRequest.model_validate(first).canonical_digest()
         == InferenceRequest.model_validate(second).canonical_digest()
     )
+
+
+def test_canonical_digest_preserves_exact_schema_numbers(gateway) -> None:  # type: ignore[no-untyped-def]
+    exact = parse_json_object(
+        json.dumps(gateway.request())
+        .replace(
+            '"response_schema": {"type": "object"}',
+            '"response_schema": {"type": "object", "enum": [1e-999]}',
+        )
+        .encode()
+    )
+    zero = parse_json_object(
+        json.dumps(gateway.request())
+        .replace(
+            '"response_schema": {"type": "object"}',
+            '"response_schema": {"type": "object", "enum": [0.0]}',
+        )
+        .encode()
+    )
+
+    exact_request = InferenceRequest.model_validate(exact)
+    zero_request = InferenceRequest.model_validate(zero)
+
+    assert exact_request.canonical_digest() != zero_request.canonical_digest()
+    assert b'"enum":[1e-999]' in encode_json_bytes(exact_request.generation.response_schema)
 
 
 @pytest.mark.parametrize(

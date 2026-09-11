@@ -11,6 +11,7 @@ from jsonschema.exceptions import SchemaError, ValidationError
 
 from .contracts import (
     InferenceRequest,
+    encode_json_bytes,
     normalize_json_numbers,
     parse_exact_json_decimal,
     parse_json_integer,
@@ -99,7 +100,10 @@ class OllamaWorker:
                 async with (
                     self._client(timeout_seconds) as client,
                     client.stream(
-                        "POST", f"{self.base_url}/v1/chat/completions", json=payload
+                        "POST",
+                        f"{self.base_url}/v1/chat/completions",
+                        content=encode_json_bytes(payload),
+                        headers={"Content-Type": "application/json"},
                     ) as response,
                 ):
                     if response.status_code in {404, 429} or 500 <= response.status_code <= 599:

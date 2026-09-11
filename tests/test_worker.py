@@ -7,7 +7,7 @@ import time
 import httpx
 import pytest
 
-from local_inference_gateway.contracts import InferenceRequest
+from local_inference_gateway.contracts import InferenceRequest, parse_json_object
 from local_inference_gateway.worker import (
     InvalidWorkerOutput,
     OllamaWorker,
@@ -161,6 +161,30 @@ def test_worker_matches_fractional_schema_enums_in_the_exact_numeric_domain(gate
     worker = worker_with_handler(lambda request: httpx.Response(200, stream=httpx.ByteStream(body)))
 
     assert worker.infer(InferenceRequest.model_validate(document), 30).content == '{"score":0.1}'
+
+
+def test_worker_preserves_exact_schema_decimals_in_dispatch_and_validation(gateway) -> None:  # type: ignore[no-untyped-def]
+    raw = json.dumps(gateway.request()).replace(
+        '"response_schema": {"type": "object"}',
+        '"response_schema": {"type": "object", "properties": '
+        '{"score": {"type": "number", "enum": [1e-999]}}, "required": ["score"]}',
+    )
+    request = InferenceRequest.model_validate(parse_json_object(raw.encode()))
+    dispatched: list[bytes] = []
+
+    def handler(http_request: httpx.Request) -> httpx.Response:
+        dispatched.append(http_request.content)
+        return httpx.Response(
+            200,
+            stream=httpx.ByteStream(
+                b'{"choices":[{"message":{"content":"{\\"score\\":1e-999}"}}]}'
+            ),
+        )
+
+    worker = worker_with_handler(handler)
+
+    assert worker.infer(request, 30).content == '{"score":1e-999}'
+    assert b'"enum":[1e-999]' in dispatched[0]
 
 
 @pytest.mark.parametrize(

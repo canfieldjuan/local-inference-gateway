@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import re
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -92,13 +91,7 @@ class Generation(ContractModel):
             raise ValueError(
                 "messages must contain one system message followed by one user message"
             )
-        schema_bytes = json.dumps(
-            self.response_schema,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-            allow_nan=False,
-        ).encode("utf-8")
+        schema_bytes = encode_json_bytes(self.response_schema)
         if len(schema_bytes) > MAX_SCHEMA_BYTES:
             raise ValueError("response_schema exceeds its byte limit")
         _validate_json_shape(self.response_schema)
@@ -146,13 +139,7 @@ class InferenceRequest(ContractModel):
         return datetime.strptime(self.request_expires_at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
 
     def canonical_digest(self) -> str:
-        encoded = json.dumps(
-            self.model_dump(mode="json"),
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=False,
-            allow_nan=False,
-        ).encode("utf-8")
+        encoded = encode_json_bytes(self.model_dump(mode="python"))
         return hashlib.sha256(encoded).hexdigest()
 
 
@@ -242,7 +229,7 @@ def parse_json_object(raw: bytes) -> dict[str, object]:
         value = json.loads(
             raw,
             parse_constant=_reject_json_constant,
-            parse_float=parse_json_float,
+            parse_float=parse_exact_json_decimal,
             parse_int=parse_json_integer,
             object_pairs_hook=parse_json_object_pairs,
         )
@@ -256,13 +243,6 @@ def parse_json_object(raw: bytes) -> dict[str, object]:
 
 def _reject_json_constant(value: str) -> None:
     raise ValueError(f"non-finite JSON constant {value} is not supported")
-
-
-def parse_json_float(value: str) -> float:
-    parsed = float(value)
-    if not math.isfinite(parsed):
-        raise ValueError("non-finite JSON number is not supported")
-    return parsed
 
 
 def parse_exact_json_decimal(value: str) -> Decimal:
@@ -290,6 +270,60 @@ def normalize_json_numbers(value: Any) -> Any:
     if isinstance(value, list):
         return [normalize_json_numbers(item) for item in value]
     return value
+
+
+def encode_json_bytes(value: Any) -> bytes:
+    return _encode_json(value).encode("utf-8")
+
+
+def _encode_json(value: Any) -> str:
+    if value is None:
+        return "null"
+    if type(value) is bool:
+        return "true" if value else "false"
+    if isinstance(value, (Decimal, float, int)):
+        return _encode_json_number(value)
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, list):
+        return "[" + ",".join(_encode_json(item) for item in value) + "]"
+    if isinstance(value, dict):
+        if any(not isinstance(key, str) for key in value):
+            raise ValueError("JSON object keys must be strings")
+        return (
+            "{"
+            + ",".join(
+                json.dumps(key, ensure_ascii=False) + ":" + _encode_json(value[key])
+                for key in sorted(value)
+            )
+            + "}"
+        )
+    raise ValueError(f"value of type {type(value).__name__} is not JSON compatible")
+
+
+def _encode_json_number(value: Decimal | float | int) -> str:
+    parsed = parse_exact_json_decimal(str(value))
+    if parsed == 0:
+        return "0"
+    parts = parsed.as_tuple()
+    if not isinstance(parts.exponent, int):
+        raise ValueError("JSON number is not finite")
+    digits = list(parts.digits)
+    exponent = parts.exponent
+    while len(digits) > 1 and digits[-1] == 0:
+        digits.pop()
+        exponent += 1
+    coefficient = "".join(str(digit) for digit in digits)
+    sign = "-" if parts.sign else ""
+    if exponent >= 0:
+        return sign + coefficient + "0" * exponent
+    point = len(coefficient) + exponent
+    if point > 0:
+        return sign + coefficient[:point] + "." + coefficient[point:]
+    mantissa = coefficient[0]
+    if len(coefficient) > 1:
+        mantissa += "." + coefficient[1:]
+    return f"{sign}{mantissa}e{len(coefficient) + exponent - 1}"
 
 
 def parse_json_object_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:

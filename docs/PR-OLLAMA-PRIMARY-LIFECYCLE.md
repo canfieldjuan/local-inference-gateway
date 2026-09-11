@@ -156,7 +156,7 @@ Verification plan:
 
 DONE for the implementation contract.
 
-- `uv run pytest -q`: 85 passed, 1 skipped; the skipped check is the intentionally opt-in live
+- `uv run pytest -q`: 87 passed, 1 skipped; the skipped check is the intentionally opt-in live
   worker test.
 - `RUN_OLLAMA_SMOKE=1 GATEWAY_OLLAMA_MODEL=qwen3-30b-a3b:latest uv run pytest -q -m live
   tests/test_live_ollama.py`: 1 passed against the installed loopback Ollama model.
