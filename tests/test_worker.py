@@ -136,6 +136,45 @@ def test_worker_rejects_json_that_does_not_match_declared_schema(gateway) -> Non
         worker.infer(InferenceRequest.model_validate(document), 30)
 
 
+def test_worker_validates_generated_numbers_without_binary_float_rounding(gateway) -> None:  # type: ignore[no-untyped-def]
+    document = gateway.request()
+    document["generation"]["response_schema"] = {  # type: ignore[index]
+        "type": "object",
+        "properties": {"x": {"type": "number", "maximum": 0}},
+        "required": ["x"],
+    }
+    body = b'{"choices":[{"message":{"content":"{\\"x\\":1e-999}"}}]}'
+    worker = worker_with_handler(lambda request: httpx.Response(200, stream=httpx.ByteStream(body)))
+
+    with pytest.raises(InvalidWorkerOutput, match="response schema"):
+        worker.infer(InferenceRequest.model_validate(document), 30)
+
+
+def test_worker_rejects_duplicate_generated_keys(gateway) -> None:  # type: ignore[no-untyped-def]
+    body = b'{"choices":[{"message":{"content":"{\\"ok\\":false,\\"ok\\":true}"}}]}'
+    worker = worker_with_handler(lambda request: httpx.Response(200, stream=httpx.ByteStream(body)))
+
+    with pytest.raises(InvalidWorkerOutput, match="valid JSON"):
+        worker.infer(InferenceRequest.model_validate(gateway.request()), 30)
+
+
+def test_worker_rejects_token_limited_completion(gateway) -> None:  # type: ignore[no-untyped-def]
+    body = json.dumps(
+        {
+            "choices": [
+                {
+                    "finish_reason": "length",
+                    "message": {"content": '{"summary":"valid prefix"}'},
+                }
+            ]
+        }
+    ).encode()
+    worker = worker_with_handler(lambda request: httpx.Response(200, stream=httpx.ByteStream(body)))
+
+    with pytest.raises(InvalidWorkerOutput, match="finish normally"):
+        worker.infer(InferenceRequest.model_validate(gateway.request()), 30)
+
+
 class _PeriodicNeverEndingStream(httpx.AsyncByteStream):
     async def __aiter__(self):  # type: ignore[no-untyped-def]
         while True:

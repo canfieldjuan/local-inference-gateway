@@ -82,6 +82,19 @@ def test_contract_rejects_non_finite_json(gateway, number: bytes) -> None:  # ty
         InferenceRequest.model_validate(document)
 
 
+def test_contract_rejects_duplicate_keys_and_fractional_schema_bounds(gateway) -> None:  # type: ignore[no-untyped-def]
+    with pytest.raises(ValueError, match="not valid JSON"):
+        parse_json_object(b'{"request_id":"first","request_id":"second"}')
+
+    document = gateway.request()
+    document["generation"]["response_schema"] = {  # type: ignore[index]
+        "type": "object",
+        "properties": {"confidence": {"type": "number", "maximum": 0.5}},
+    }
+    with pytest.raises(ValidationError, match="numeric bounds must be integers"):
+        InferenceRequest.model_validate(document)
+
+
 def test_contract_rejects_invalid_or_referencing_response_schema(gateway) -> None:  # type: ignore[no-untyped-def]
     invalid = gateway.request()
     invalid["generation"]["response_schema"] = {"type": 42}  # type: ignore[index]

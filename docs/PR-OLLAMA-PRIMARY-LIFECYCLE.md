@@ -117,8 +117,9 @@ Verification plan:
   plaintext are excluded from persistence.
 - Added an Ollama adapter that streams bounded identity-encoded responses under an absolute
   cancellable deadline, inserts the configured model only at the private worker boundary, rejects
-  non-standard JSON or output that violates the declared bounded Draft 2020-12 subset, and
-  separates proven worker unavailability from ambiguous outcomes.
+  duplicate/non-standard JSON, validates numbers exactly against the declared bounded Draft 2020-12
+  subset, rejects token-limited completions, and separates proven worker unavailability from
+  ambiguous outcomes.
 - Added owner-private credential/key loading without symlink following, constant-time token-digest
   comparison, loopback-only URL/bind validation, public-repository CI, operator documentation, and
   an opt-in synthetic real-Ollama lifecycle proof.
@@ -137,8 +138,9 @@ Verification plan:
   at the limit succeed and one byte over fails; boolean protocol/version values, invalid UUID text,
   encoded worker output, non-finite JSON constants, a never-ending periodic worker response,
   invalid, referencing, regex, or open-ended schemas, schema-invalid generated output, corrupted
-  retained ciphertext, missing persisted schema columns, maintenance intervals outside both
-  boundaries, symlinked private configuration, conflicting identities, duplicate credentials,
+  retained ciphertext, duplicate JSON keys, finite overflow, exact numeric underflow, truncated
+  completions, missing persisted schema columns, maintenance intervals outside both boundaries,
+  symlinked private configuration, conflicting identities, duplicate credentials,
   early/conflicting acknowledgements, and above-capacity admission all fail closed.
 - Untraced or forbidden changes: none. No fallback, application repository, Connect contract,
   remote bind, installer, deployment service, or model-promotion state changed.
@@ -150,7 +152,7 @@ Verification plan:
 
 DONE for the implementation contract.
 
-- `uv run pytest -q`: 75 passed, 1 skipped; the skipped check is the intentionally opt-in live
+- `uv run pytest -q`: 79 passed, 1 skipped; the skipped check is the intentionally opt-in live
   worker test.
 - `RUN_OLLAMA_SMOKE=1 GATEWAY_OLLAMA_MODEL=qwen3-30b-a3b:latest uv run pytest -q -m live
   tests/test_live_ollama.py`: 1 passed against the installed loopback Ollama model.

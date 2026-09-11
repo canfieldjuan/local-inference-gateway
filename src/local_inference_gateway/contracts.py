@@ -5,6 +5,7 @@ import json
 import math
 import re
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
 from jsonschema import Draft202012Validator
@@ -18,6 +19,7 @@ MAX_SCHEMA_BYTES = 250_000
 MAX_JSON_DEPTH = 32
 MAX_JSON_NODES = 20_000
 MAX_SCHEMA_ENUM_VALUES = 100
+MAX_FINITE_BINARY64 = Decimal("1.7976931348623157e308")
 SUPPORTED_SCHEMA_KEYWORDS = frozenset(
     {
         "additionalProperties",
@@ -207,6 +209,10 @@ def _validate_supported_schema(
         or any(isinstance(item, (dict, list)) for item in enum)
     ):
         raise ValueError("response_schema enum must contain bounded scalar values")
+    for keyword in ("minimum", "maximum"):
+        value = schema.get(keyword)
+        if value is not None and type(value) is not int:
+            raise ValueError("response_schema numeric bounds must be integers")
     alternatives = schema.get("anyOf")
     if alternatives is None:
         return
@@ -231,6 +237,7 @@ def parse_json_object(raw: bytes) -> dict[str, object]:
             raw,
             parse_constant=_reject_json_constant,
             parse_float=parse_json_float,
+            object_pairs_hook=parse_json_object_pairs,
         )
     except (UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise ValueError("request body is not valid JSON") from exc
@@ -249,6 +256,25 @@ def parse_json_float(value: str) -> float:
     if not math.isfinite(parsed):
         raise ValueError("non-finite JSON number is not supported")
     return parsed
+
+
+def parse_exact_json_decimal(value: str) -> Decimal:
+    try:
+        parsed = Decimal(value)
+    except InvalidOperation as exc:
+        raise ValueError("JSON number is invalid") from exc
+    if not parsed.is_finite() or abs(parsed) > MAX_FINITE_BINARY64:
+        raise ValueError("JSON number exceeds the supported finite range")
+    return parsed
+
+
+def parse_json_object_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    document: dict[str, object] = {}
+    for key, value in pairs:
+        if key in document:
+            raise ValueError("duplicate JSON object key is not supported")
+        document[key] = value
+    return document
 
 
 def safe_request_id(value: object) -> str | None:

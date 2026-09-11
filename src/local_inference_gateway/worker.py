@@ -9,7 +9,7 @@ import httpx
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
 
-from .contracts import InferenceRequest, parse_json_float
+from .contracts import InferenceRequest, parse_exact_json_decimal, parse_json_object_pairs
 
 MAX_WORKER_RESPONSE_BYTES = 1_000_000
 MAX_OUTPUT_CONTENT_BYTES = 750_000
@@ -113,6 +113,8 @@ class OllamaWorker:
         message = choices[0].get("message")
         if not isinstance(message, dict):
             raise InvalidWorkerOutput("worker response has no completion message")
+        if choices[0].get("finish_reason") not in {None, "stop"}:
+            raise InvalidWorkerOutput("worker completion did not finish normally")
         content = message.get("content") or ""
         if not isinstance(content, str) or not content.strip():
             content = message.get("reasoning_content") or message.get("reasoning") or ""
@@ -128,7 +130,8 @@ class OllamaWorker:
             generated = json.loads(
                 encoded,
                 parse_constant=_reject_json_constant,
-                parse_float=parse_json_float,
+                parse_float=parse_exact_json_decimal,
+                object_pairs_hook=parse_json_object_pairs,
             )
         except (UnicodeDecodeError, ValueError, RecursionError) as exc:
             raise InvalidWorkerOutput("worker content is not valid JSON") from exc
@@ -170,7 +173,8 @@ async def _bounded_json(response: httpx.Response) -> dict[str, object]:
         document = json.loads(
             body,
             parse_constant=_reject_json_constant,
-            parse_float=parse_json_float,
+            parse_float=parse_exact_json_decimal,
+            object_pairs_hook=parse_json_object_pairs,
         )
     except (UnicodeDecodeError, ValueError, RecursionError) as exc:
         raise InvalidWorkerOutput("worker response is not valid JSON") from exc
