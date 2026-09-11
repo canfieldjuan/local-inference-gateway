@@ -16,8 +16,9 @@ Required change surface:
 - Include the seed in canonical identity and worker dispatch when present.
 - Exclude an absent seed from canonical serialization so existing request bytes and durable digests
   retain their protocol-v1 meaning.
-- Prove that absent, zero, maximum, changed, boolean, negative, and above-maximum forms obey those
-  boundaries and that the private Ollama request receives the exact admitted value.
+- Prove that absent, zero, maximum, changed, explicit-null, boolean, negative, and above-maximum
+  forms obey those boundaries and that the private Ollama request receives the exact admitted
+  value.
 
 Explicit non-scope:
 
@@ -42,7 +43,8 @@ Verification plan:
 
 1. A request without `generation.seed` validates and has the same canonical digest as the existing
    protocol-v1 shape.
-2. Seeds zero and signed 64-bit maximum validate; booleans, negatives, and maximum plus one fail.
+2. Seeds zero and signed 64-bit maximum validate; explicit null, booleans, negatives, and maximum
+   plus one fail.
 3. Two otherwise identical seeded requests with different values have different canonical digests.
 4. The worker omits `seed` for an old request and transmits the exact integer for a seeded request.
 5. Existing request lifecycle, identity, expiry, acknowledgement, authorization, and task-policy
@@ -62,8 +64,8 @@ Verification plan:
   and uses `exclude_none=True` so old request identity is byte-semantically unchanged.
 - `worker.py` adds only the admitted non-null seed to the private OpenAI-compatible Ollama request.
 - Contract tests pin the pre-change unseeded digest and probe absent, zero, maximum, changed,
-  boolean, negative, and maximum-plus-one values. The worker test observes both omitted and exact
-  transmitted forms.
+  explicit-null, boolean, negative, and maximum-plus-one values. The worker test observes both
+  omitted and exact transmitted forms.
 - No app route, task policy, store, acknowledgement, authorization, expiry, configuration,
   deployment, or application repository changed.
 - Untraced or forbidden changes: none.
@@ -72,8 +74,8 @@ Verification plan:
 
 DONE for the bounded compatibility contract.
 
-- Focused contract/worker proof: 70 passed.
-- Full local pytest: 137 passed and 1 intentionally skipped live test.
+- Focused contract/worker proof: 71 passed.
+- Full local pytest: 138 passed and 1 intentionally skipped live test.
 - Ruff lint passed; Ruff format reported 24 files already formatted.
 - Mypy reported no issues in 7 source files.
 - Source distribution and wheel built successfully.

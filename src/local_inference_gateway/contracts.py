@@ -94,6 +94,13 @@ class Generation(ContractModel):
     seed: int | None = Field(default=None, ge=0, le=9_223_372_036_854_775_807)
     response_schema: dict[str, Any]
 
+    @model_validator(mode="before")
+    @classmethod
+    def reject_explicit_null_seed(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "seed" in value and value["seed"] is None:
+            raise ValueError("seed must be omitted or a strict integer")
+        return value
+
     @model_validator(mode="after")
     def validate_generation_shape(self) -> Generation:
         if [message.role for message in self.messages] != ["system", "user"]:

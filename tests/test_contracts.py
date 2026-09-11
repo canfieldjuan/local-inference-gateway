@@ -41,7 +41,7 @@ def test_seed_is_optional_bounded_and_part_of_canonical_identity(gateway, seed: 
     assert admitted.canonical_digest() != other.canonical_digest()
 
 
-@pytest.mark.parametrize("seed", [True, -1, 9_223_372_036_854_775_808])
+@pytest.mark.parametrize("seed", [None, True, -1, 9_223_372_036_854_775_808])
 def test_seed_rejects_ambiguous_and_out_of_range_values(gateway, seed: object) -> None:  # type: ignore[no-untyped-def]
     document = gateway.request()
     document["generation"]["seed"] = seed  # type: ignore[index]
