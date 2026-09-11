@@ -82,6 +82,11 @@ def test_contract_rejects_non_finite_json(gateway, number: bytes) -> None:  # ty
         InferenceRequest.model_validate(document)
 
 
+def test_contract_rejects_integer_tokens_outside_the_supported_finite_range() -> None:
+    with pytest.raises(ValueError, match="not valid JSON"):
+        parse_json_object(b'{"response_schema":{"enum":[' + b"9" * 400 + b"]}}")
+
+
 def test_contract_rejects_duplicate_keys_and_fractional_schema_bounds(gateway) -> None:  # type: ignore[no-untyped-def]
     with pytest.raises(ValueError, match="not valid JSON"):
         parse_json_object(b'{"request_id":"first","request_id":"second"}')
@@ -101,7 +106,7 @@ def test_contract_rejects_invalid_or_referencing_response_schema(gateway) -> Non
     reference = gateway.request()
     reference["generation"]["response_schema"] = {"$ref": "#/missing"}  # type: ignore[index]
 
-    with pytest.raises(ValidationError, match="valid JSON Schema"):
+    with pytest.raises(ValidationError, match="unsupported type"):
         InferenceRequest.model_validate(invalid)
     with pytest.raises(ValidationError, match="unsupported keyword"):
         InferenceRequest.model_validate(reference)
@@ -138,3 +143,18 @@ def test_contract_allows_only_bounded_nullable_schema_composition(gateway) -> No
         InferenceRequest.model_validate(hostile)
     with pytest.raises(ValidationError, match="bounded scalar"):
         InferenceRequest.model_validate(non_scalar_enum)
+
+
+@pytest.mark.parametrize("schema_type", ["array", ["string", "null"]])
+def test_contract_rejects_unsupported_nested_schema_types(
+    gateway,
+    schema_type: object,  # type: ignore[no-untyped-def]
+) -> None:
+    document = gateway.request()
+    document["generation"]["response_schema"] = {  # type: ignore[index]
+        "type": "object",
+        "properties": {"value": {"type": schema_type}},
+    }
+
+    with pytest.raises(ValidationError, match="unsupported type"):
+        InferenceRequest.model_validate(document)

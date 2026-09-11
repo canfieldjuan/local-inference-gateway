@@ -28,9 +28,9 @@ this first slice.
   `enum`, numeric/string bounds, annotations, and one non-nested nullable `anyOf`. References,
   regex patterns, and open-ended combinators are rejected before worker dispatch so validation
   cannot monopolize the worker lane.
-- Worker JSON rejects duplicate object keys and non-finite or binary64-overflowing numbers. Numeric
-  schema validation uses exact decimals, and token-limited completions are never persisted as
-  successful results.
+- Worker JSON rejects duplicate object keys and integer or fractional numbers outside the supported
+  finite-binary64 range. Schema and output numbers share one exact validation domain, and
+  token-limited completions are never persisted as successful results.
 
 The public repository grants no access to a running gateway, its credentials, or private data. No
 software license has been selected yet.

@@ -150,6 +150,36 @@ def test_worker_validates_generated_numbers_without_binary_float_rounding(gatewa
         worker.infer(InferenceRequest.model_validate(document), 30)
 
 
+def test_worker_matches_fractional_schema_enums_in_the_exact_numeric_domain(gateway) -> None:  # type: ignore[no-untyped-def]
+    document = gateway.request()
+    document["generation"]["response_schema"] = {  # type: ignore[index]
+        "type": "object",
+        "properties": {"score": {"type": "number", "enum": [0.1]}},
+        "required": ["score"],
+    }
+    body = b'{"choices":[{"message":{"content":"{\\"score\\":0.1}"}}]}'
+    worker = worker_with_handler(lambda request: httpx.Response(200, stream=httpx.ByteStream(body)))
+
+    assert worker.infer(InferenceRequest.model_validate(document), 30).content == '{"score":0.1}'
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        b'{"choices":[{"message":{"content":"{\\"value\\":' + b"9" * 400 + b'}"}}]}',
+        b'{"oversized":' + b"9" * 400 + b',"choices":[{"message":{"content":"{}"}}]}',
+    ],
+)
+def test_worker_rejects_integer_tokens_outside_the_supported_finite_range(
+    gateway,
+    body: bytes,  # type: ignore[no-untyped-def]
+) -> None:
+    worker = worker_with_handler(lambda request: httpx.Response(200, stream=httpx.ByteStream(body)))
+
+    with pytest.raises(InvalidWorkerOutput, match="valid JSON"):
+        worker.infer(InferenceRequest.model_validate(gateway.request()), 30)
+
+
 def test_worker_rejects_duplicate_generated_keys(gateway) -> None:  # type: ignore[no-untyped-def]
     body = b'{"choices":[{"message":{"content":"{\\"ok\\":false,\\"ok\\":true}"}}]}'
     worker = worker_with_handler(lambda request: httpx.Response(200, stream=httpx.ByteStream(body)))

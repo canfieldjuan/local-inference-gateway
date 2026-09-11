@@ -33,7 +33,9 @@ Required change surface:
 - Validate generated JSON against the caller's bounded Draft 2020-12 subset before persistence.
   Require an object root and permit only the nested scalar/object constraints needed by
   `email.analyze@1`, including one non-nested nullable union; reject references, regex patterns,
-  and open-ended combinators before dispatch.
+  unsupported type values, and open-ended combinators before dispatch. Normalize schema and output
+  numbers into one exact validation domain, and reject integer and fractional tokens outside the
+  documented finite range at every JSON boundary.
 - Serialize expiry, completion, and acknowledgement. Expired requests never dispatch; late worker
   output is discarded. Scheduled maintenance removes idle expired ciphertext without relying on
   later request traffic. A restart preserves the producing deployment/policy provenance alongside
@@ -82,7 +84,8 @@ Verification plan:
   expiry/late-output serialization, completed-result restart replay, and ambiguous restart behavior.
 - Boundary probes: request size limit minus/at/above boundary; expiry past/inside/above policy;
   queue capacity; malformed and boolean protocol/version values; partial credentials; same identity
-  with same/different content.
+  with same/different content; fractional schema enums; oversized integer tokens; unsupported nested
+  schema types.
 - Static checks: Ruff lint and format check plus mypy.
 - Build check: build wheel/sdist and install the wheel into an isolated environment.
 - Manual check: development-only ASGI smoke through the configured loopback Ollama candidate, with
@@ -138,9 +141,10 @@ Verification plan:
   at the limit succeed and one byte over fails; boolean protocol/version values, invalid UUID text,
   encoded worker output, non-finite JSON constants, a never-ending periodic worker response,
   invalid, referencing, regex, or open-ended schemas, schema-invalid generated output, corrupted
-  retained ciphertext, duplicate JSON keys, finite overflow, exact numeric underflow, truncated
-  completions, missing persisted schema columns, maintenance intervals outside both boundaries,
-  symlinked private configuration, conflicting identities, duplicate credentials,
+  retained ciphertext, duplicate JSON keys, fractional enum matching, finite fractional/integer
+  overflow, exact numeric underflow, unsupported nested schema types, truncated completions,
+  missing persisted schema columns, maintenance intervals outside both boundaries, symlinked
+  private configuration, conflicting identities, duplicate credentials,
   early/conflicting acknowledgements, and above-capacity admission all fail closed.
 - Untraced or forbidden changes: none. No fallback, application repository, Connect contract,
   remote bind, installer, deployment service, or model-promotion state changed.
@@ -152,7 +156,7 @@ Verification plan:
 
 DONE for the implementation contract.
 
-- `uv run pytest -q`: 79 passed, 1 skipped; the skipped check is the intentionally opt-in live
+- `uv run pytest -q`: 85 passed, 1 skipped; the skipped check is the intentionally opt-in live
   worker test.
 - `RUN_OLLAMA_SMOKE=1 GATEWAY_OLLAMA_MODEL=qwen3-30b-a3b:latest uv run pytest -q -m live
   tests/test_live_ollama.py`: 1 passed against the installed loopback Ollama model.

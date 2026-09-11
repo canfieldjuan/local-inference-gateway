@@ -20,6 +20,7 @@ MAX_JSON_DEPTH = 32
 MAX_JSON_NODES = 20_000
 MAX_SCHEMA_ENUM_VALUES = 100
 MAX_FINITE_BINARY64 = Decimal("1.7976931348623157e308")
+SUPPORTED_SCHEMA_TYPES = frozenset({"boolean", "integer", "null", "number", "object", "string"})
 SUPPORTED_SCHEMA_KEYWORDS = frozenset(
     {
         "additionalProperties",
@@ -193,6 +194,11 @@ def _validate_supported_schema(
     unsupported = set(schema) - SUPPORTED_SCHEMA_KEYWORDS
     if unsupported:
         raise ValueError(f"response_schema uses unsupported keyword {sorted(unsupported)[0]!r}")
+    schema_type = schema.get("type")
+    if schema_type is not None and (
+        not isinstance(schema_type, str) or schema_type not in SUPPORTED_SCHEMA_TYPES
+    ):
+        raise ValueError("response_schema uses an unsupported type")
     properties = schema.get("properties")
     if isinstance(properties, dict):
         for child in properties.values():
@@ -237,6 +243,7 @@ def parse_json_object(raw: bytes) -> dict[str, object]:
             raw,
             parse_constant=_reject_json_constant,
             parse_float=parse_json_float,
+            parse_int=parse_json_integer,
             object_pairs_hook=parse_json_object_pairs,
         )
     except (UnicodeDecodeError, ValueError, RecursionError) as exc:
@@ -266,6 +273,23 @@ def parse_exact_json_decimal(value: str) -> Decimal:
     if not parsed.is_finite() or abs(parsed) > MAX_FINITE_BINARY64:
         raise ValueError("JSON number exceeds the supported finite range")
     return parsed
+
+
+def parse_json_integer(value: str) -> int:
+    parsed = int(value)
+    if abs(Decimal(value)) > MAX_FINITE_BINARY64:
+        raise ValueError("JSON number exceeds the supported finite range")
+    return parsed
+
+
+def normalize_json_numbers(value: Any) -> Any:
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, dict):
+        return {key: normalize_json_numbers(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [normalize_json_numbers(item) for item in value]
+    return value
 
 
 def parse_json_object_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:

@@ -9,7 +9,13 @@ import httpx
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
 
-from .contracts import InferenceRequest, parse_exact_json_decimal, parse_json_object_pairs
+from .contracts import (
+    InferenceRequest,
+    normalize_json_numbers,
+    parse_exact_json_decimal,
+    parse_json_integer,
+    parse_json_object_pairs,
+)
 
 MAX_WORKER_RESPONSE_BYTES = 1_000_000
 MAX_OUTPUT_CONTENT_BYTES = 750_000
@@ -131,6 +137,7 @@ class OllamaWorker:
                 encoded,
                 parse_constant=_reject_json_constant,
                 parse_float=parse_exact_json_decimal,
+                parse_int=parse_json_integer,
                 object_pairs_hook=parse_json_object_pairs,
             )
         except (UnicodeDecodeError, ValueError, RecursionError) as exc:
@@ -138,7 +145,9 @@ class OllamaWorker:
         if not isinstance(generated, dict):
             raise InvalidWorkerOutput("worker content must be a JSON object")
         try:
-            Draft202012Validator(generation.response_schema).validate(generated)
+            Draft202012Validator(normalize_json_numbers(generation.response_schema)).validate(
+                generated
+            )
         except (SchemaError, ValidationError) as exc:
             raise InvalidWorkerOutput("worker content does not match response schema") from exc
         return WorkerResult(media_type="application/json", content=content)
@@ -174,6 +183,7 @@ async def _bounded_json(response: httpx.Response) -> dict[str, object]:
             body,
             parse_constant=_reject_json_constant,
             parse_float=parse_exact_json_decimal,
+            parse_int=parse_json_integer,
             object_pairs_hook=parse_json_object_pairs,
         )
     except (UnicodeDecodeError, ValueError, RecursionError) as exc:

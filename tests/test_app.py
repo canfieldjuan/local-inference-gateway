@@ -268,15 +268,24 @@ def test_unsupported_schema_evaluation_is_rejected_before_dispatch(gateway) -> N
     dangling["generation"]["response_schema"] = {"$ref": "#/missing"}  # type: ignore[index]
     scalar = deepcopy(hostile)
     scalar["generation"]["response_schema"] = {"type": "string"}  # type: ignore[index]
+    nested_array = deepcopy(hostile)
+    nested_array["generation"]["response_schema"] = {  # type: ignore[index]
+        "type": "object",
+        "properties": {"value": {"type": "array"}},
+    }
 
     hostile_response = gateway.client.post("/v1/inference", headers=gateway.headers, json=hostile)
     dangling_response = gateway.client.post("/v1/inference", headers=gateway.headers, json=dangling)
     scalar_response = gateway.client.post("/v1/inference", headers=gateway.headers, json=scalar)
+    nested_array_response = gateway.client.post(
+        "/v1/inference", headers=gateway.headers, json=nested_array
+    )
 
     assert (
         hostile_response.status_code
         == dangling_response.status_code
         == scalar_response.status_code
+        == nested_array_response.status_code
         == 422
     )
     assert gateway.worker.calls == 0
