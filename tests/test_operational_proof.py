@@ -36,11 +36,16 @@ class Fixture:
         self.submissions: list[dict[str, object]] = []
         self.forbidden_submissions: list[tuple[str, str]] = []
         self.extra_health_task: dict[str, object] | None = None
+        self.health_extra_fields: dict[str, object] = {}
+        self.task_extra_fields: dict[str, object] = {}
         self.inference_protocol_version = 1
         self.inference_request_id: str | None = None
         self.omit_inference_request_id = False
         self.ack_protocol_version = 1
         self.ack_request_id: str | None = None
+        self.retain_after_ack = False
+        self.acknowledged: set[str] = set()
+        self.events: list[tuple[str, str]] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         token = request.headers.get("authorization", "").removeprefix("Bearer ")
@@ -49,19 +54,41 @@ class Fixture:
         if request.url.path == "/v1/health":
             tasks = (
                 [
-                    {"id": "email.analyze", "version": 1, "status": "available"},
-                    {"id": "email.schedule.extract", "version": 1, "status": "available"},
+                    {
+                        "id": "email.analyze",
+                        "version": 1,
+                        "status": "available",
+                        "diagnostic_code": "ready",
+                    },
+                    {
+                        "id": "email.schedule.extract",
+                        "version": 1,
+                        "status": "available",
+                        "diagnostic_code": "ready",
+                    },
                 ]
                 if token == "e" * 32
-                else [{"id": "document.summary.step", "version": 1, "status": "available"}]
+                else [
+                    {
+                        "id": "document.summary.step",
+                        "version": 1,
+                        "status": "available",
+                        "diagnostic_code": "ready",
+                    }
+                ]
             )
             if self.extra_health_task is not None:
                 tasks.append(self.extra_health_task)
-            return self.response({"protocol_version": 1, "tasks": tasks})
+            for task in tasks:
+                task.update(self.task_extra_fields)
+            return self.response(
+                {"protocol_version": 1, "tasks": tasks, **self.health_extra_fields}
+            )
         body = json.loads(request.content)
         if request.url.path == "/v1/inference":
             self.submissions.append(body)
             task = body["task"]["id"]
+            self.events.append(("submitted", task))
             authorized = {
                 "e" * 32: {"email.analyze", "email.schedule.extract"},
                 "d" * 32: {"document.summary.step"},
@@ -69,6 +96,16 @@ class Fixture:
             if task not in authorized.get(token, set()):
                 self.forbidden_submissions.append((token, task))
                 return self.response({"error": {"code": "forbidden"}}, 403)
+            if body["request_id"] in self.acknowledged:
+                return self.response(
+                    {
+                        "protocol_version": 1,
+                        "request_id": body["request_id"],
+                        "status": "failed",
+                        "error": {"code": "unknown_request", "retryable": False},
+                    },
+                    410,
+                )
             schema = body["generation"]["response_schema"]
             field = schema["required"][0]
             expected = schema["properties"][field]["enum"][0]
@@ -87,11 +124,14 @@ class Fixture:
             return self.response(original[1])
         if request.url.path.endswith("/ack"):
             request_id = body["request_id"]
+            if not self.retain_after_ack:
+                self.acknowledged.add(request_id)
             return self.response(
                 {
                     "protocol_version": self.ack_protocol_version,
                     "request_id": self.ack_request_id or request_id,
                     "status": "acknowledged",
+                    "disposition": "persisted",
                 }
             )
         raise AssertionError(request.url.path)
@@ -145,7 +185,7 @@ def test_restart_state_reuses_one_request(files: tuple[Path, Path, Path], tmp_pa
     second.acknowledge(second.document_token, request)
     second.close()
     matching = [item for item in fixture.submissions if item["request_id"] == request["request_id"]]
-    assert matching == [request, request]
+    assert matching == [request, request, request]
     assert state.stat().st_mode & 0o777 == 0o600
 
 
@@ -169,6 +209,22 @@ def test_health_rejects_extra_cross_scope_task(files: tuple[Path, Path, Path]) -
         "version": 1,
         "status": "unavailable",
     }
+    client = proof(module, files, fixture)
+    try:
+        with pytest.raises(module.ProofError, match="credential-scoped health"):
+            client.health()
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("location", ["health", "task"])
+def test_health_rejects_undeclared_metadata(location: str, files: tuple[Path, Path, Path]) -> None:
+    module = load_module()
+    fixture = Fixture()
+    if location == "health":
+        fixture.health_extra_fields["model"] = "must-not-leak"
+    else:
+        fixture.task_extra_fields["credential"] = "must-not-leak"
     client = proof(module, files, fixture)
     try:
         with pytest.raises(module.ProofError, match="credential-scoped health"):
@@ -207,3 +263,39 @@ def test_acknowledge_rejects_response_identity_mismatch(files: tuple[Path, Path,
             client.acknowledge(client.email_token, module._request("email.analyze"))
     finally:
         client.close()
+
+
+def test_acknowledge_requires_result_cleanup(files: tuple[Path, Path, Path]) -> None:
+    module = load_module()
+    fixture = Fixture()
+    fixture.retain_after_ack = True
+    client = proof(module, files, fixture)
+    request = module._request("email.analyze")
+    try:
+        client.completed(client.email_token, request)
+        with pytest.raises(module.ProofError, match="acknowledgement cleanup"):
+            client.acknowledge(client.email_token, request)
+    finally:
+        client.close()
+
+
+def test_requests_are_created_immediately_before_first_submission(
+    files: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load_module()
+    fixture = Fixture()
+    original_request = module._request
+
+    def tracked_request(task: str):  # type: ignore[no-untyped-def]
+        fixture.events.append(("created", task))
+        return original_request(task)
+
+    monkeypatch.setattr(module, "_request", tracked_request)
+    client = proof(module, files, fixture)
+    try:
+        client.run()
+    finally:
+        client.close()
+    for index, event in enumerate(fixture.events):
+        if event[0] == "created":
+            assert fixture.events[index + 1] == ("submitted", event[1])

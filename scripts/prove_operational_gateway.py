@@ -153,25 +153,38 @@ class Proof:
         if status != 200 or live != {"protocol_version": 1, "status": "live"}:
             raise ProofError("liveness response is incompatible")
         expected = (
-            (self.email_token, {("email.analyze", 1), ("email.schedule.extract", 1)}),
-            (self.document_token, {("document.summary.step", 1)}),
+            (
+                self.email_token,
+                [
+                    {
+                        "id": "email.analyze",
+                        "version": 1,
+                        "status": "available",
+                        "diagnostic_code": "ready",
+                    },
+                    {
+                        "id": "email.schedule.extract",
+                        "version": 1,
+                        "status": "available",
+                        "diagnostic_code": "ready",
+                    },
+                ],
+            ),
+            (
+                self.document_token,
+                [
+                    {
+                        "id": "document.summary.step",
+                        "version": 1,
+                        "status": "available",
+                        "diagnostic_code": "ready",
+                    }
+                ],
+            ),
         )
         for token, tasks in expected:
             status, health = self.call("GET", "/v1/health", token)
-            items = health.get("tasks")
-            if status != 200 or health.get("protocol_version") != 1 or not isinstance(items, list):
-                raise ProofError("credential-scoped health is incompatible")
-            task_documents: list[dict[str, Any]] = []
-            for item in items:
-                if not isinstance(item, dict):
-                    raise ProofError("credential-scoped health is incompatible")
-                task_documents.append(item)
-            actual = {(item.get("id"), item.get("version")) for item in task_documents}
-            if (
-                len(task_documents) != len(tasks)
-                or actual != tasks
-                or any(item.get("status") != "available" for item in task_documents)
-            ):
+            if status != 200 or health != {"protocol_version": 1, "tasks": tasks}:
                 raise ProofError("credential-scoped health is incompatible")
         _emit("health", status="available")
 
@@ -216,21 +229,31 @@ class Proof:
                 "disposition": "persisted",
             },
         )
-        if (
-            status != 200
-            or response.get("protocol_version") != 1
-            or response.get("request_id") != request["request_id"]
-            or response.get("status") != "acknowledged"
-        ):
+        expected = {
+            "protocol_version": 1,
+            "request_id": request["request_id"],
+            "status": "acknowledged",
+            "disposition": "persisted",
+        }
+        if status != 200 or response != expected:
             raise ProofError("acknowledgement failed")
+        status, response = self.call("POST", "/v1/inference", token, request)
+        expected = {
+            "protocol_version": 1,
+            "request_id": request["request_id"],
+            "status": "failed",
+            "error": {"code": "unknown_request", "retryable": False},
+        }
+        if status != 410 or response != expected:
+            raise ProofError("acknowledgement cleanup failed")
 
     def run(self) -> None:
         self.health()
-        requests = [
-            (self.email_token, _request("email.analyze")),
-            (self.email_token, _request("email.schedule.extract")),
-            (self.document_token, _request("document.summary.step")),
-        ]
+        requests = (
+            (self.email_token, "email.analyze"),
+            (self.email_token, "email.schedule.extract"),
+            (self.document_token, "document.summary.step"),
+        )
         forbidden = (
             (self.email_token, "document.summary.step"),
             (self.document_token, "email.analyze"),
@@ -242,7 +265,8 @@ class Proof:
             if status != 403 or not isinstance(error, dict) or error.get("code") != "forbidden":
                 raise ProofError("cross-credential task access did not fail closed")
         _emit("authorization", status="forbidden")
-        for token, request in requests:
+        for token, task in requests:
+            request = _request(task)
             first = self.completed(token, request)
             if self.completed(token, request) != first:
                 raise ProofError("exact replay changed the result")
