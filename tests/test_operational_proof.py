@@ -46,25 +46,28 @@ class Fixture:
         self.retain_after_ack = False
         self.acknowledged: set[str] = set()
         self.events: list[tuple[str, str]] = []
+        self.worker_available = True
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         token = request.headers.get("authorization", "").removeprefix("Bearer ")
         if request.url.path == "/health/live":
             return self.response({"protocol_version": 1, "status": "live"})
         if request.url.path == "/v1/health":
+            status = "available" if self.worker_available else "unavailable"
+            diagnostic_code = "ready" if self.worker_available else "worker_unavailable"
             tasks = (
                 [
                     {
                         "id": "email.analyze",
                         "version": 1,
-                        "status": "available",
-                        "diagnostic_code": "ready",
+                        "status": status,
+                        "diagnostic_code": diagnostic_code,
                     },
                     {
                         "id": "email.schedule.extract",
                         "version": 1,
-                        "status": "available",
-                        "diagnostic_code": "ready",
+                        "status": status,
+                        "diagnostic_code": diagnostic_code,
                     },
                 ]
                 if token == "e" * 32
@@ -72,8 +75,8 @@ class Fixture:
                     {
                         "id": "document.summary.step",
                         "version": 1,
-                        "status": "available",
-                        "diagnostic_code": "ready",
+                        "status": status,
+                        "diagnostic_code": diagnostic_code,
                     }
                 ]
             )
@@ -106,6 +109,20 @@ class Fixture:
                     },
                     410,
                 )
+            original = self.requests.get(body["request_id"])
+            if original is not None:
+                assert original[0] == body
+                return self.response(original[1])
+            if not self.worker_available:
+                return self.response(
+                    {
+                        "protocol_version": 1,
+                        "request_id": body["request_id"],
+                        "status": "failed",
+                        "error": {"code": "worker_unavailable", "retryable": True},
+                    },
+                    503,
+                )
             schema = body["generation"]["response_schema"]
             field = schema["required"][0]
             expected = schema["properties"][field]["enum"][0]
@@ -119,9 +136,8 @@ class Fixture:
             }
             if not self.omit_inference_request_id:
                 result["request_id"] = self.inference_request_id or body["request_id"]
-            original = self.requests.setdefault(body["request_id"], (body, result))
-            assert original[0] == body
-            return self.response(original[1])
+            self.requests[body["request_id"]] = (body, result)
+            return self.response(result)
         if request.url.path.endswith("/ack"):
             request_id = body["request_id"]
             if not self.retain_after_ack:
@@ -180,13 +196,31 @@ def test_restart_state_reuses_one_request(files: tuple[Path, Path, Path], tmp_pa
     first = proof(module, files, fixture)
     first.completed(first.document_token, request)
     first.close()
+    fixture.worker_available = False
     second = proof(module, files, fixture)
+    second.health(worker_available=False)
     second.completed(second.document_token, module._read_state(state))
     second.acknowledge(second.document_token, request)
     second.close()
     matching = [item for item in fixture.submissions if item["request_id"] == request["request_id"]]
     assert matching == [request, request, request]
     assert state.stat().st_mode & 0o777 == 0o600
+
+
+def test_unavailable_worker_cannot_execute_missing_restart_state(
+    files: tuple[Path, Path, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    module = load_module()
+    fixture = Fixture()
+    fixture.worker_available = False
+    client = proof(module, files, fixture)
+    try:
+        client.health(worker_available=False)
+        assert json.loads(capsys.readouterr().out)["status"] == "worker_unavailable"
+        with pytest.raises(module.ProofError, match="inference did not complete"):
+            client.completed(client.document_token, module._request("document.summary.step"))
+    finally:
+        client.close()
 
 
 def test_proof_rejects_unsafe_endpoint_and_credential(files: tuple[Path, Path, Path]) -> None:

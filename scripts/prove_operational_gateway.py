@@ -148,10 +148,12 @@ class Proof:
         response = self.client.request(method, path, headers=headers, json=body)
         return response.status_code, _json(response)
 
-    def health(self) -> None:
+    def health(self, *, worker_available: bool = True) -> None:
         status, live = self.call("GET", "/health/live")
         if status != 200 or live != {"protocol_version": 1, "status": "live"}:
             raise ProofError("liveness response is incompatible")
+        task_status = "available" if worker_available else "unavailable"
+        diagnostic_code = "ready" if worker_available else "worker_unavailable"
         expected = (
             (
                 self.email_token,
@@ -159,14 +161,14 @@ class Proof:
                     {
                         "id": "email.analyze",
                         "version": 1,
-                        "status": "available",
-                        "diagnostic_code": "ready",
+                        "status": task_status,
+                        "diagnostic_code": diagnostic_code,
                     },
                     {
                         "id": "email.schedule.extract",
                         "version": 1,
-                        "status": "available",
-                        "diagnostic_code": "ready",
+                        "status": task_status,
+                        "diagnostic_code": diagnostic_code,
                     },
                 ],
             ),
@@ -176,8 +178,8 @@ class Proof:
                     {
                         "id": "document.summary.step",
                         "version": 1,
-                        "status": "available",
-                        "diagnostic_code": "ready",
+                        "status": task_status,
+                        "diagnostic_code": diagnostic_code,
                     }
                 ],
             ),
@@ -186,7 +188,7 @@ class Proof:
             status, health = self.call("GET", "/v1/health", token)
             if status != 200 or health != {"protocol_version": 1, "tasks": tasks}:
                 raise ProofError("credential-scoped health is incompatible")
-        _emit("health", status="available")
+        _emit("health", status="available" if worker_available else "worker_unavailable")
 
     def completed(self, token: str, request: dict[str, Any]) -> dict[str, Any]:
         started = time.monotonic()
@@ -328,7 +330,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             proof.completed(proof.document_token, request)
             _emit("restart_prepare", request_id=request["request_id"], status="retained")
         else:
-            proof.health()
+            proof.health(worker_available=False)
             request = _read_state(arguments.restart_state_file)
             proof.completed(proof.document_token, request)
             proof.acknowledge(proof.document_token, request)
