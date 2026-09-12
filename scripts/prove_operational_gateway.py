@@ -247,7 +247,7 @@ class Proof:
             "error": {"code": "unknown_request", "retryable": False},
         }
         if status != 410 or response != expected:
-            raise ProofError("acknowledgement cleanup failed")
+            raise ProofError("acknowledgement finalization failed")
 
     def run(self) -> None:
         self.health()
@@ -262,9 +262,15 @@ class Proof:
             (self.document_token, "email.schedule.extract"),
         )
         for token, task in forbidden:
-            status, response = self.call("POST", "/v1/inference", token, _request(task))
-            error = response.get("error")
-            if status != 403 or not isinstance(error, dict) or error.get("code") != "forbidden":
+            request = _request(task)
+            status, response = self.call("POST", "/v1/inference", token, request)
+            expected = {
+                "protocol_version": 1,
+                "request_id": request["request_id"],
+                "status": "failed",
+                "error": {"code": "forbidden", "retryable": False},
+            }
+            if status != 403 or response != expected:
                 raise ProofError("cross-credential task access did not fail closed")
         _emit("authorization", status="forbidden")
         for token, task in requests:

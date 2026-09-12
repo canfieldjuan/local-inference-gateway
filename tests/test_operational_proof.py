@@ -47,6 +47,7 @@ class Fixture:
         self.acknowledged: set[str] = set()
         self.events: list[tuple[str, str]] = []
         self.worker_available = True
+        self.forbidden_extra_fields: dict[str, object] = {}
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         token = request.headers.get("authorization", "").removeprefix("Bearer ")
@@ -98,7 +99,16 @@ class Fixture:
             }
             if task not in authorized.get(token, set()):
                 self.forbidden_submissions.append((token, task))
-                return self.response({"error": {"code": "forbidden"}}, 403)
+                return self.response(
+                    {
+                        "protocol_version": 1,
+                        "request_id": body["request_id"],
+                        "status": "failed",
+                        "error": {"code": "forbidden", "retryable": False},
+                        **self.forbidden_extra_fields,
+                    },
+                    403,
+                )
             if body["request_id"] in self.acknowledged:
                 return self.response(
                     {
@@ -299,7 +309,7 @@ def test_acknowledge_rejects_response_identity_mismatch(files: tuple[Path, Path,
         client.close()
 
 
-def test_acknowledge_requires_result_cleanup(files: tuple[Path, Path, Path]) -> None:
+def test_acknowledge_requires_result_to_be_unreplayable(files: tuple[Path, Path, Path]) -> None:
     module = load_module()
     fixture = Fixture()
     fixture.retain_after_ack = True
@@ -307,7 +317,7 @@ def test_acknowledge_requires_result_cleanup(files: tuple[Path, Path, Path]) -> 
     request = module._request("email.analyze")
     try:
         client.completed(client.email_token, request)
-        with pytest.raises(module.ProofError, match="acknowledgement cleanup"):
+        with pytest.raises(module.ProofError, match="acknowledgement finalization"):
             client.acknowledge(client.email_token, request)
     finally:
         client.close()
@@ -333,3 +343,17 @@ def test_requests_are_created_immediately_before_first_submission(
     for index, event in enumerate(fixture.events):
         if event[0] == "created":
             assert fixture.events[index + 1] == ("submitted", event[1])
+
+
+def test_cross_credential_denial_rejects_noncanonical_envelope(
+    files: tuple[Path, Path, Path],
+) -> None:
+    module = load_module()
+    fixture = Fixture()
+    fixture.forbidden_extra_fields["output"] = {"content": "must-not-appear"}
+    client = proof(module, files, fixture)
+    try:
+        with pytest.raises(module.ProofError, match="cross-credential task access"):
+            client.run()
+    finally:
+        client.close()
