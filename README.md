@@ -185,6 +185,70 @@ GATEWAY_OLLAMA_MODEL=qwen3-30b-a3b:latest \
 uv run pytest -q -m live tests/test_live_ollama.py
 ```
 
+### Operational HTTPS proof
+
+After configuring a loopback HTTPS gateway with the two application credentials shown above, run
+the network proof with synthetic content only:
+
+```bash
+install -d -m 700 /private/path/https-proof
+mkcert -cert-file /private/path/https-proof/server.pem \
+  -key-file /private/path/https-proof/server-key.pem 127.0.0.1
+install -m 0644 "$(mkcert -CAROOT)/rootCA.pem" /private/path/https-proof/gateway-ca.pem
+chmod 600 /private/path/https-proof/server-key.pem
+export GATEWAY_BIND_HOST=127.0.0.1
+export GATEWAY_TLS_CERTIFICATE_FILE=/private/path/https-proof/server.pem
+export GATEWAY_TLS_KEY_FILE=/private/path/https-proof/server-key.pem
+```
+
+This `mkcert` certificate is for a development-host proof only, not a private-LAN appliance.
+Start the gateway with its normal private configuration, then run:
+
+```bash
+uv run python scripts/prove_operational_gateway.py run \
+  --base-url https://127.0.0.1:8787 \
+  --ca-file /private/path/https-proof/gateway-ca.pem \
+  --email-token-file /private/path/email-watcher.token \
+  --document-token-file /private/path/document-summarizer.token
+```
+
+The command verifies credential-scoped health, forbidden cross-credential task use, all three
+current task policies, exact replay, and acknowledgement. It prints statuses, request identities,
+and elapsed times; it never prints credentials, prompts, or generated content.
+
+To prove completed-result continuity across an actual gateway restart, create a unique owner-private
+state directory for each run and complete both phases inside the restart request's 15-minute lifetime:
+
+```bash
+proof_restart_dir=$(mktemp -d /private/path/restart-proof.XXXXXX)
+uv run python scripts/prove_operational_gateway.py prepare-restart \
+  --base-url https://127.0.0.1:8787 \
+  --ca-file /private/path/https-proof/gateway-ca.pem \
+  --email-token-file /private/path/email-watcher.token \
+  --document-token-file /private/path/document-summarizer.token \
+  --restart-state-file "$proof_restart_dir/request.json"
+
+# Stop the gateway. Restart it against the same database and encryption key, but point
+# GATEWAY_OLLAMA_URL at a closed loopback port for this proof-only reconciliation phase.
+# A retained result still replays; missing state now fails instead of dispatching fresh work.
+export GATEWAY_OLLAMA_URL=http://127.0.0.1:1
+# Start the proof gateway process with the remaining configuration unchanged.
+
+uv run python scripts/prove_operational_gateway.py reconcile-restart \
+  --base-url https://127.0.0.1:8787 \
+  --ca-file /private/path/https-proof/gateway-ca.pem \
+  --email-token-file /private/path/email-watcher.token \
+  --document-token-file /private/path/document-summarizer.token \
+  --restart-state-file "$proof_restart_dir/request.json"
+```
+
+Stop the proof process and restore the normal Ollama URL before starting the operational gateway.
+Archive or remove the owner-private proof directory according to local evidence-retention policy;
+the next run creates a new directory and never reuses the old handoff.
+
+This proves the network-process gateway contract, not system-service installation, installed-app UI
+acceptance, private-LAN firewall/certificate deployment, or model promotion.
+
 ## Failure map
 
 - Configuration startup failure: confirm every required environment variable, owner-only file
