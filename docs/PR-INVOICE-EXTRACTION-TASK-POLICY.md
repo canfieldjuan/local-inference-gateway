@@ -80,15 +80,35 @@ Verification plan:
 
 ### Implementation summary
 
-Not implemented. This commit establishes the independently reviewable behavioral contract.
+- Added `invoice.extract.batch@1` with temperature 0.0 and a 12,288-token ceiling. The Email
+  Watcher and Document Summarizer policies retain their existing limits and schema permissions.
+- Raised only the shared syntactic token ceiling; task authorization and effective limits remain in
+  the immutable policy map before reservation or worker dispatch.
+- Added an independently scoped Invoice Processor test credential, authenticated health coverage,
+  cross-credential refusal, exact replay, acknowledgement, and cap/temperature boundary tests.
+- Documented owner-private Invoice Processor token creation and credential configuration without
+  adding or printing a credential.
 
 ### Cold diff audit
 
-- This revision adds only the task-policy contract. Runtime code, tests, configuration examples,
-  application repositories, and deployment artifacts are unchanged.
+- `contracts.py` raises the syntactic output-token ceiling to the Invoice Processor's current bound;
+  it does not grant any task that capacity.
+- `app.py` is the effective admission choke point. It grants 12,288 tokens and temperature 0.0 only
+  to `invoice.extract.batch@1`; all tasks still enter the unchanged lifecycle.
+- `tests/conftest.py`, `tests/test_app.py`, and `tests/test_contracts.py` exercise isolated health,
+  both sides of output and temperature admission, cross-credential rejection, replay, and
+  acknowledgement without real application data.
+- `README.md` documents the implemented task and independent private credential while explicitly
+  leaving Invoice Processor application acceptance to the client slice.
 - Untraced or forbidden changes: none.
 
 ### Gap audit
 
-NOT DONE. Runtime policy, tests, documentation, verification, application client, and installed-app
-evidence remain to be implemented under their respective contracts.
+LOCAL IMPLEMENTATION DONE; review and merge remain.
+
+- Focused app/contract verification: 67 passed.
+- Full local verification: 154 passed and 1 intentionally skipped live test; Ruff lint and format,
+  mypy over 7 source files, source distribution, wheel build, and diff whitespace passed.
+- Invoice Processor wire-schema projection, gateway client, durable request/acknowledgement
+  integration, direct-runtime rollout fallback, and installed-app evidence remain NOT DONE in the
+  coordinated application slice.

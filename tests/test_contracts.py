@@ -276,11 +276,11 @@ def test_contract_rejects_nested_non_nullable_object_choices(gateway) -> None:  
         InferenceRequest.model_validate(document)
 
 
-def test_contract_caps_global_output_tokens_at_document_boundary(gateway) -> None:  # type: ignore[no-untyped-def]
+def test_contract_caps_global_output_tokens_at_invoice_boundary(gateway) -> None:  # type: ignore[no-untyped-def]
     at_limit = gateway.request()
-    at_limit["requirements"]["max_output_tokens"] = 4_096  # type: ignore[index]
+    at_limit["requirements"]["max_output_tokens"] = 12_288  # type: ignore[index]
     above_limit = gateway.request()
-    above_limit["requirements"]["max_output_tokens"] = 4_097  # type: ignore[index]
+    above_limit["requirements"]["max_output_tokens"] = 12_289  # type: ignore[index]
 
     InferenceRequest.model_validate(at_limit)
     with pytest.raises(ValidationError):

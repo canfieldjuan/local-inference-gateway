@@ -17,6 +17,7 @@ from local_inference_gateway.worker import WorkerResult
 
 TOKEN = "email-watcher-test-token-000000000000"
 OTHER_TOKEN = "document-summarizer-token-0000000000"
+INVOICE_TOKEN = "invoice-processor-token-000000000000"
 REQUEST_ID = "12345678-1234-4234-8234-123456789abc"
 
 
@@ -75,6 +76,10 @@ class GatewayHarness:
     def other_headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {OTHER_TOKEN}"}
 
+    @property
+    def invoice_headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {INVOICE_TOKEN}"}
+
     def request(self, **overrides: object) -> dict[str, object]:
         document: dict[str, object] = {
             "protocol_version": 1,
@@ -118,7 +123,12 @@ def credential_store() -> CredentialStore:
             }
         ),
     )
-    return CredentialStore((email, other))
+    invoice = Credential(
+        hashlib.sha256(b"invoice-processor").hexdigest(),
+        hashlib.sha256(INVOICE_TOKEN.encode("ascii")).hexdigest(),
+        frozenset({("invoice.extract.batch", 1)}),
+    )
+    return CredentialStore((email, other, invoice))
 
 
 def build_harness(

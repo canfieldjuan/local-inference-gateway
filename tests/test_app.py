@@ -14,7 +14,14 @@ from local_inference_gateway.app import create_app
 from local_inference_gateway.contracts import InferenceRequest
 from local_inference_gateway.store import RequestStore
 from local_inference_gateway.worker import WorkerOutcomeAmbiguous, WorkerUnavailable
-from tests.conftest import OTHER_TOKEN, REQUEST_ID, TOKEN, FakeWorker, build_harness
+from tests.conftest import (
+    INVOICE_TOKEN,
+    OTHER_TOKEN,
+    REQUEST_ID,
+    TOKEN,
+    FakeWorker,
+    build_harness,
+)
 
 
 def test_liveness_and_scoped_health_disclose_no_worker_details(gateway) -> None:  # type: ignore[no-untyped-def]
@@ -22,6 +29,7 @@ def test_liveness_and_scoped_health_disclose_no_worker_details(gateway) -> None:
     unauthorized = gateway.client.get("/v1/health")
     health = gateway.client.get("/v1/health", headers=gateway.headers)
     other = gateway.client.get("/v1/health", headers=gateway.other_headers)
+    invoice = gateway.client.get("/v1/health", headers=gateway.invoice_headers)
 
     assert live.json() == {"protocol_version": 1, "status": "live"}
     assert unauthorized.status_code == 401
@@ -53,10 +61,21 @@ def test_liveness_and_scoped_health_disclose_no_worker_details(gateway) -> None:
             }
         ],
     }
-    encoded = json.dumps([live.json(), health.json(), other.json()])
+    assert invoice.json() == {
+        "protocol_version": 1,
+        "tasks": [
+            {
+                "id": "invoice.extract.batch",
+                "version": 1,
+                "status": "available",
+                "diagnostic_code": "ready",
+            }
+        ],
+    }
+    encoded = json.dumps([live.json(), health.json(), other.json(), invoice.json()])
     assert "ollama" not in encoded.casefold()
     assert "qwen" not in encoded.casefold()
-    assert TOKEN not in encoded and OTHER_TOKEN not in encoded
+    assert TOKEN not in encoded and OTHER_TOKEN not in encoded and INVOICE_TOKEN not in encoded
 
 
 def test_scheduling_task_uses_existing_durable_lifecycle(gateway) -> None:  # type: ignore[no-untyped-def]
@@ -183,6 +202,48 @@ def test_document_summary_step_uses_existing_durable_lifecycle(gateway) -> None:
     assert gateway.worker.calls == 1
 
 
+def test_invoice_extraction_batch_uses_existing_durable_lifecycle(gateway) -> None:  # type: ignore[no-untyped-def]
+    gateway.worker.result_content = '{"vendor_name":null,"line_items":[]}'
+    document = gateway.request()
+    document["task"] = {"id": "invoice.extract.batch", "version": 1}
+    document["requirements"]["max_output_tokens"] = 12_288  # type: ignore[index]
+    document["generation"]["temperature"] = 0.0  # type: ignore[index]
+    document["generation"]["response_schema"] = {  # type: ignore[index]
+        "type": "object",
+        "properties": {
+            "vendor_name": {"anyOf": [{"type": "string", "maxLength": 100}, {"type": "null"}]},
+            "line_items": {
+                "type": "array",
+                "items": {"type": "object", "additionalProperties": False},
+                "maxItems": 50,
+            },
+        },
+        "required": ["vendor_name", "line_items"],
+        "additionalProperties": False,
+    }
+
+    completed = gateway.client.post("/v1/inference", headers=gateway.invoice_headers, json=document)
+    replay = gateway.client.post("/v1/inference", headers=gateway.invoice_headers, json=document)
+    acknowledgement = gateway.client.post(
+        f"/v1/inference/{REQUEST_ID}/ack",
+        headers=gateway.invoice_headers,
+        json={
+            "protocol_version": 1,
+            "request_id": REQUEST_ID,
+            "disposition": "persisted",
+        },
+    )
+    after_ack = gateway.client.post("/v1/inference", headers=gateway.invoice_headers, json=document)
+
+    assert completed.status_code == replay.status_code == 200
+    assert completed.json() == replay.json()
+    assert completed.json()["provenance"]["task_policy_version"] == 1
+    assert acknowledgement.status_code == 200
+    assert after_ack.status_code == 410
+    assert after_ack.json()["error"]["code"] == "unknown_request"
+    assert gateway.worker.calls == 1
+
+
 def test_task_specific_output_and_schema_policy_fail_before_dispatch(gateway) -> None:  # type: ignore[no-untyped-def]
     email_too_large = gateway.request()
     email_too_large["requirements"]["max_output_tokens"] = 1_501  # type: ignore[index]
@@ -201,6 +262,18 @@ def test_task_specific_output_and_schema_policy_fail_before_dispatch(gateway) ->
     document_at_limit["task"] = {"id": "document.summary.step", "version": 1}
     document_at_limit["requirements"]["max_output_tokens"] = 4_096  # type: ignore[index]
     document_at_limit["generation"]["temperature"] = 0.0  # type: ignore[index]
+    invoice_at_limit = gateway.request(request_id="42345678-1234-4234-8234-123456789abc")
+    invoice_at_limit["task"] = {"id": "invoice.extract.batch", "version": 1}
+    invoice_at_limit["requirements"]["max_output_tokens"] = 12_288  # type: ignore[index]
+    invoice_at_limit["generation"]["temperature"] = 0.0  # type: ignore[index]
+    invoice_too_large = gateway.request(request_id="52345678-1234-4234-8234-123456789abc")
+    invoice_too_large["task"] = {"id": "invoice.extract.batch", "version": 1}
+    invoice_too_large["requirements"]["max_output_tokens"] = 12_289  # type: ignore[index]
+    invoice_too_large["generation"]["temperature"] = 0.0  # type: ignore[index]
+    invoice_wrong_temperature = gateway.request(request_id="62345678-1234-4234-8234-123456789abc")
+    invoice_wrong_temperature["task"] = {"id": "invoice.extract.batch", "version": 1}
+    invoice_wrong_temperature["requirements"]["max_output_tokens"] = 12_288  # type: ignore[index]
+    invoice_wrong_temperature["generation"]["temperature"] = 0.1  # type: ignore[index]
 
     rejected_output = gateway.client.post(
         "/v1/inference", headers=gateway.headers, json=email_too_large
@@ -211,12 +284,26 @@ def test_task_specific_output_and_schema_policy_fail_before_dispatch(gateway) ->
     accepted_document = gateway.client.post(
         "/v1/inference", headers=gateway.other_headers, json=document_at_limit
     )
+    accepted_invoice = gateway.client.post(
+        "/v1/inference", headers=gateway.invoice_headers, json=invoice_at_limit
+    )
+    rejected_invoice_output = gateway.client.post(
+        "/v1/inference", headers=gateway.invoice_headers, json=invoice_too_large
+    )
+    rejected_invoice_temperature = gateway.client.post(
+        "/v1/inference", headers=gateway.invoice_headers, json=invoice_wrong_temperature
+    )
 
     assert rejected_output.status_code == rejected_choice.status_code == 422
     assert rejected_output.json()["error"]["code"] == "unsupported_task"
     assert rejected_choice.json()["error"]["code"] == "unsupported_task"
     assert accepted_document.status_code == 200
-    assert gateway.worker.calls == 1
+    assert accepted_invoice.status_code == 200
+    assert rejected_invoice_output.status_code == 422
+    assert rejected_invoice_output.json()["error"]["code"] == "invalid_request"
+    assert rejected_invoice_temperature.status_code == 422
+    assert rejected_invoice_temperature.json()["error"]["code"] == "unsupported_task"
+    assert gateway.worker.calls == 2
 
 
 def test_task_policy_does_not_grant_or_implement_undeclared_tasks(gateway) -> None:  # type: ignore[no-untyped-def]
@@ -228,11 +315,27 @@ def test_task_policy_does_not_grant_or_implement_undeclared_tasks(gateway) -> No
     document = gateway.request()
     document["task"] = {"id": "document.chunk.summarize", "version": 1}
     unsupported = gateway.client.post("/v1/inference", headers=gateway.other_headers, json=document)
+    invoice = gateway.request(request_id="22345678-1234-4234-8234-123456789abc")
+    invoice["task"] = {"id": "invoice.extract.batch", "version": 1}
+    invoice["requirements"]["max_output_tokens"] = 12_288  # type: ignore[index]
+    invoice["generation"]["temperature"] = 0.0  # type: ignore[index]
+    email_using_invoice = gateway.client.post(
+        "/v1/inference", headers=gateway.headers, json=invoice
+    )
+    document_using_invoice = gateway.client.post(
+        "/v1/inference", headers=gateway.other_headers, json=invoice
+    )
+    invoice_using_email = gateway.client.post(
+        "/v1/inference", headers=gateway.invoice_headers, json=gateway.request()
+    )
 
     assert unauthorized.status_code == 403
     assert unauthorized.json()["error"]["code"] == "forbidden"
     assert unsupported.status_code == 422
     assert unsupported.json()["error"]["code"] == "unsupported_task"
+    for response in (email_using_invoice, document_using_invoice, invoice_using_email):
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "forbidden"
     assert gateway.worker.calls == 0
 
 

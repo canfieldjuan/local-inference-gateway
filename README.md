@@ -4,10 +4,11 @@ A private, on-prem inference boundary for Local Connect applications. Applicatio
 versioned task; the gateway owns worker selection and model identity. This keeps application code
 independent of Ollama, LM Studio, GPU placement, and future runtime changes.
 
-Current milestone: authenticated, durable `email.analyze@1`, `email.schedule.extract@1`, and
-`document.summary.step@1` lifecycles backed by Ollama, with an explicit TLS-only private-LAN
-listener for a single-process Linux appliance. LM Studio fallback, remaining application cutovers,
-certificate automation, and public-Internet deployment remain deferred.
+Current milestone: authenticated, durable `email.analyze@1`, `email.schedule.extract@1`,
+`document.summary.step@1`, and `invoice.extract.batch@1` lifecycles backed by Ollama, with an
+explicit TLS-only private-LAN listener for a single-process Linux appliance. LM Studio fallback,
+remaining application cutovers, certificate automation, and public-Internet deployment remain
+deferred.
 
 ## Security model
 
@@ -32,9 +33,9 @@ certificate automation, and public-Internet deployment remain deferred.
   2 through 64 closed object branches. References, nested object choices, open branches, tuple or
   unbounded arrays, regex patterns, and open-ended combinators are rejected before worker dispatch
   so validation cannot monopolize the worker lane.
-- Output-token admission is task-specific: the Email Watcher tasks remain capped at 1,500 and the
-  document summary step is capped at 4,096. Raising the parser's global ceiling does not grant a
-  credential more capacity for another task.
+- Output-token admission is task-specific: the Email Watcher tasks remain capped at 1,500, the
+  document summary step at 4,096, and an invoice extraction batch at 12,288. Raising the parser's
+  global ceiling does not grant a credential more capacity for another task.
 - Worker JSON rejects duplicate object keys and integer or fractional numbers outside the supported
   finite-binary64 range. Schema and output numbers share one exact validation domain, and
   token-limited completions are never persisted as successful results.
@@ -65,9 +66,11 @@ install -d -m 700 "$HOME/.local/state/local-inference-gateway"
 umask 077
 python -c 'from pathlib import Path; import secrets; (Path.home() / ".local/state/local-inference-gateway/email-watcher.token").write_text(secrets.token_hex(32), encoding="ascii")'
 python -c 'from pathlib import Path; import secrets; (Path.home() / ".local/state/local-inference-gateway/document-summarizer.token").write_text(secrets.token_hex(32), encoding="ascii")'
+python -c 'from pathlib import Path; import secrets; (Path.home() / ".local/state/local-inference-gateway/invoice-processor.token").write_text(secrets.token_hex(32), encoding="ascii")'
 openssl rand -base64 32 > "$HOME/.local/state/local-inference-gateway/result.key"
 sha256sum "$HOME/.local/state/local-inference-gateway/email-watcher.token"
 sha256sum "$HOME/.local/state/local-inference-gateway/document-summarizer.token"
+sha256sum "$HOME/.local/state/local-inference-gateway/invoice-processor.token"
 ```
 
 Copy only the printed digest into an owner-private credential file:
@@ -89,6 +92,13 @@ Copy only the printed digest into an owner-private credential file:
       "token_sha256": "<different 64-character lowercase SHA-256 digest>",
       "tasks": [
         {"id": "document.summary.step", "version": 1}
+      ]
+    },
+    {
+      "id": "invoice-processor",
+      "token_sha256": "<third 64-character lowercase SHA-256 digest>",
+      "tasks": [
+        {"id": "invoice.extract.batch", "version": 1}
       ]
     }
   ]
@@ -187,8 +197,9 @@ uv run pytest -q -m live tests/test_live_ollama.py
 
 ### Operational HTTPS proof
 
-After configuring a loopback HTTPS gateway with the two application credentials shown above, run
-the network proof with synthetic content only:
+After configuring a loopback HTTPS gateway with the Email Watcher and Document Summarizer
+credentials shown above, run the existing three-task network proof with synthetic content only.
+Invoice Processor application acceptance is a separate client slice.
 
 ```bash
 install -d -m 700 /private/path/https-proof
