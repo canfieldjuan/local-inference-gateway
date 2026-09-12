@@ -55,7 +55,7 @@ Verification plan:
 
 ### Acceptance criteria
 
-1. The public HTTPS listener reports liveness and credential-scoped task health without exposing
+1. The loopback HTTPS listener reports liveness and credential-scoped task health without exposing
    the worker, model, other credentials, or customer content.
 2. Synthetic requests for all three current task policies complete through the real Ollama worker,
    replay under their original identity, and acknowledge successfully.
