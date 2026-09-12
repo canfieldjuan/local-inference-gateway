@@ -185,6 +185,62 @@ GATEWAY_OLLAMA_MODEL=qwen3-30b-a3b:latest \
 uv run pytest -q -m live tests/test_live_ollama.py
 ```
 
+### Operational HTTPS proof
+
+After configuring a loopback HTTPS gateway with the two application credentials shown above, run
+the network proof with synthetic content only:
+
+```bash
+install -d -m 700 /private/path/https-proof
+mkcert -cert-file /private/path/https-proof/server.pem \
+  -key-file /private/path/https-proof/server-key.pem 127.0.0.1
+install -m 0644 "$(mkcert -CAROOT)/rootCA.pem" /private/path/https-proof/gateway-ca.pem
+chmod 600 /private/path/https-proof/server-key.pem
+export GATEWAY_BIND_HOST=127.0.0.1
+export GATEWAY_TLS_CERTIFICATE_FILE=/private/path/https-proof/server.pem
+export GATEWAY_TLS_KEY_FILE=/private/path/https-proof/server-key.pem
+```
+
+This `mkcert` certificate is for a development-host proof only, not a private-LAN appliance.
+Start the gateway with its normal private configuration, then run:
+
+```bash
+uv run python scripts/prove_operational_gateway.py run \
+  --base-url https://127.0.0.1:8787 \
+  --ca-file /private/path/gateway-ca.pem \
+  --email-token-file /private/path/email-watcher.token \
+  --document-token-file /private/path/document-summarizer.token
+```
+
+The command verifies credential-scoped health, forbidden cross-credential task use, all three
+current task policies, exact replay, and acknowledgement. It prints statuses, request identities,
+and elapsed times; it never prints credentials, prompts, or generated content.
+
+To prove completed-result continuity across an actual gateway restart, use an owner-private state
+directory and run the two phases around the restart:
+
+```bash
+install -d -m 700 /private/path/restart-proof
+uv run python scripts/prove_operational_gateway.py prepare-restart \
+  --base-url https://127.0.0.1:8787 \
+  --ca-file /private/path/gateway-ca.pem \
+  --email-token-file /private/path/email-watcher.token \
+  --document-token-file /private/path/document-summarizer.token \
+  --restart-state-file /private/path/restart-proof/request.json
+
+# Stop and start the same single gateway service against the same database and encryption key.
+
+uv run python scripts/prove_operational_gateway.py reconcile-restart \
+  --base-url https://127.0.0.1:8787 \
+  --ca-file /private/path/gateway-ca.pem \
+  --email-token-file /private/path/email-watcher.token \
+  --document-token-file /private/path/document-summarizer.token \
+  --restart-state-file /private/path/restart-proof/request.json
+```
+
+This proves the network-process gateway contract, not system-service installation, installed-app UI
+acceptance, private-LAN firewall/certificate deployment, or model promotion.
+
 ## Failure map
 
 - Configuration startup failure: confirm every required environment variable, owner-only file
