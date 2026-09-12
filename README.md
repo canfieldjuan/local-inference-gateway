@@ -216,17 +216,17 @@ The command verifies credential-scoped health, forbidden cross-credential task u
 current task policies, exact replay, and acknowledgement. It prints statuses, request identities,
 and elapsed times; it never prints credentials, prompts, or generated content.
 
-To prove completed-result continuity across an actual gateway restart, use an owner-private state
-directory and run the two phases around the restart:
+To prove completed-result continuity across an actual gateway restart, create a unique owner-private
+state directory for each run and complete both phases inside the restart request's 15-minute lifetime:
 
 ```bash
-install -d -m 700 /private/path/restart-proof
+proof_restart_dir=$(mktemp -d /private/path/restart-proof.XXXXXX)
 uv run python scripts/prove_operational_gateway.py prepare-restart \
   --base-url https://127.0.0.1:8787 \
   --ca-file /private/path/https-proof/gateway-ca.pem \
   --email-token-file /private/path/email-watcher.token \
   --document-token-file /private/path/document-summarizer.token \
-  --restart-state-file /private/path/restart-proof/request.json
+  --restart-state-file "$proof_restart_dir/request.json"
 
 # Stop the gateway. Restart it against the same database and encryption key, but point
 # GATEWAY_OLLAMA_URL at a closed loopback port for this proof-only reconciliation phase.
@@ -239,10 +239,12 @@ uv run python scripts/prove_operational_gateway.py reconcile-restart \
   --ca-file /private/path/https-proof/gateway-ca.pem \
   --email-token-file /private/path/email-watcher.token \
   --document-token-file /private/path/document-summarizer.token \
-  --restart-state-file /private/path/restart-proof/request.json
+  --restart-state-file "$proof_restart_dir/request.json"
 ```
 
 Stop the proof process and restore the normal Ollama URL before starting the operational gateway.
+Archive or remove the owner-private proof directory according to local evidence-retention policy;
+the next run creates a new directory and never reuses the old handoff.
 
 This proves the network-process gateway contract, not system-service installation, installed-app UI
 acceptance, private-LAN firewall/certificate deployment, or model promotion.

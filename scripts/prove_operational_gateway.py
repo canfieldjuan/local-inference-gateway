@@ -67,12 +67,12 @@ def _token(path: Path) -> str:
     return token
 
 
-def _request(task: str) -> dict[str, Any]:
+def _request(task: str, *, lifetime_seconds: int = 600) -> dict[str, Any]:
     temperature, field, expected = TASKS[task]
     return {
         "protocol_version": 1,
         "request_id": str(uuid.uuid4()),
-        "request_expires_at": (datetime.now(UTC) + timedelta(minutes=10)).strftime(
+        "request_expires_at": (datetime.now(UTC) + timedelta(seconds=lifetime_seconds)).strftime(
             "%Y-%m-%dT%H:%M:%SZ"
         ),
         "task": {"id": task, "version": 1},
@@ -331,7 +331,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             proof.run()
         elif arguments.phase == "prepare-restart":
             proof.health()
-            request = _request("document.summary.step")
+            request = _request("document.summary.step", lifetime_seconds=900)
             _write_state(arguments.restart_state_file, request)
             proof.completed(proof.document_token, request)
             _emit("restart_prepare", request_id=request["request_id"], status="retained")

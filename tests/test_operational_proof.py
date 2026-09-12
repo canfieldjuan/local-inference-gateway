@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -231,6 +232,16 @@ def test_unavailable_worker_cannot_execute_missing_restart_state(
             client.completed(client.document_token, module._request("document.summary.step"))
     finally:
         client.close()
+
+
+def test_restart_request_can_use_full_supported_lifetime() -> None:
+    module = load_module()
+    before = datetime.now(UTC) + timedelta(seconds=895)
+    request = module._request("document.summary.step", lifetime_seconds=900)
+    expires_at = datetime.strptime(request["request_expires_at"], "%Y-%m-%dT%H:%M:%SZ").replace(
+        tzinfo=UTC
+    )
+    assert expires_at >= before
 
 
 def test_proof_rejects_unsafe_endpoint_and_credential(files: tuple[Path, Path, Path]) -> None:
