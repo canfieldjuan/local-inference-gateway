@@ -158,12 +158,20 @@ class Proof:
         )
         for token, tasks in expected:
             status, health = self.call("GET", "/v1/health", token)
-            actual = {
-                (item.get("id"), item.get("version"))
-                for item in health.get("tasks", [])
-                if isinstance(item, dict) and item.get("status") == "available"
-            }
-            if status != 200 or actual != tasks:
+            items = health.get("tasks")
+            if status != 200 or health.get("protocol_version") != 1 or not isinstance(items, list):
+                raise ProofError("credential-scoped health is incompatible")
+            task_documents: list[dict[str, Any]] = []
+            for item in items:
+                if not isinstance(item, dict):
+                    raise ProofError("credential-scoped health is incompatible")
+                task_documents.append(item)
+            actual = {(item.get("id"), item.get("version")) for item in task_documents}
+            if (
+                len(task_documents) != len(tasks)
+                or actual != tasks
+                or any(item.get("status") != "available" for item in task_documents)
+            ):
                 raise ProofError("credential-scoped health is incompatible")
         _emit("health", status="available")
 
@@ -171,7 +179,13 @@ class Proof:
         started = time.monotonic()
         status, response = self.call("POST", "/v1/inference", token, request)
         output = response.get("output")
-        if status != 200 or response.get("status") != "completed" or not isinstance(output, dict):
+        if (
+            status != 200
+            or response.get("protocol_version") != 1
+            or response.get("request_id") != request["request_id"]
+            or response.get("status") != "completed"
+            or not isinstance(output, dict)
+        ):
             raise ProofError("inference did not complete")
         schema = request["generation"]["response_schema"]
         field = schema["required"][0]
@@ -202,7 +216,12 @@ class Proof:
                 "disposition": "persisted",
             },
         )
-        if status != 200 or response.get("status") != "acknowledged":
+        if (
+            status != 200
+            or response.get("protocol_version") != 1
+            or response.get("request_id") != request["request_id"]
+            or response.get("status") != "acknowledged"
+        ):
             raise ProofError("acknowledgement failed")
 
     def run(self) -> None:
@@ -212,10 +231,16 @@ class Proof:
             (self.email_token, _request("email.schedule.extract")),
             (self.document_token, _request("document.summary.step")),
         ]
-        status, response = self.call("POST", "/v1/inference", self.email_token, requests[-1][1])
-        error = response.get("error")
-        if status != 403 or not isinstance(error, dict) or error.get("code") != "forbidden":
-            raise ProofError("cross-credential task access did not fail closed")
+        forbidden = (
+            (self.email_token, "document.summary.step"),
+            (self.document_token, "email.analyze"),
+            (self.document_token, "email.schedule.extract"),
+        )
+        for token, task in forbidden:
+            status, response = self.call("POST", "/v1/inference", token, _request(task))
+            error = response.get("error")
+            if status != 403 or not isinstance(error, dict) or error.get("code") != "forbidden":
+                raise ProofError("cross-credential task access did not fail closed")
         _emit("authorization", status="forbidden")
         for token, request in requests:
             first = self.completed(token, request)
