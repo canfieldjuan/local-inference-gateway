@@ -61,6 +61,7 @@ def test_systemd_installer_activates_only_complete_clean_revision() -> None:
     assert 'install -d -o root -g root -m 0755 "$release_dir"' in installer
     assert '"$uv_bin" venv --python "$python_bin" "$release_dir/venv"' in installer
     assert '--python "$release_dir/venv/bin/python"' in installer
+    assert "--link-mode copy" in installer
     assert '--build-constraints "$build_constraints_file"' in installer
     assert (
         '[[ -x "$release_executable" && -f "$release_executable" && '

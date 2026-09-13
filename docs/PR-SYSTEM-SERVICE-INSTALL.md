@@ -87,12 +87,12 @@ Verification plan:
 - `deploy/systemd/install.sh` now requires a local-files-only dedicated identity selected identically
   by default NSS with no supplementary groups and a service-readable interpreter whose full canonical
   path is root-owned and non-writable, captures the selected commit into a root-owned snapshot,
-  installs that snapshot with locked runtime and build dependencies into a root-owned, service-readable
-  commit-addressed release, rejects incomplete, mismatched, mutable, or externally redirected releases
-  including every unsafe symlink traversal and target, rejects redirected managed paths, serializes
-  installers, flips the active virtual-environment symlink only after an isolated service-user import
-  resolves inside the release environment, installs the snapshot's reviewed unit, and performs only
-  `daemon-reload`.
+  installs that snapshot with locked runtime and build dependencies copied into a root-owned,
+  service-readable commit-addressed release, rejects incomplete, mismatched, mutable, or externally
+  redirected releases including every unsafe symlink traversal and target, rejects redirected managed
+  paths, serializes installers, flips the active virtual-environment symlink only after an isolated
+  service-user import resolves inside the release environment, installs the snapshot's reviewed unit,
+  and performs only `daemon-reload`.
 - `deploy/systemd/build-constraints.txt` pins the complete isolated Hatchling build environment used
   by the installer so one commit-addressed release does not resolve differently over time.
 - `tests/test_deployment.py` now exercises shell syntax and non-root rejection and asserts the clean
@@ -116,8 +116,9 @@ Verification plan:
   `tests/test_deployment.py` plus `bash -n`.
 - `deploy/systemd/install.sh` and `deploy/systemd/build-constraints.txt` derive the full commit
   identity, archive that immutable revision into a private snapshot, reject symlinked/incomplete or
-  identity-mismatched releases, install locked runtime and build dependencies at their final path,
-  explicitly grant safe read/traverse permissions despite the installer's private default umask,
+  identity-mismatched releases, install locked runtime and build dependencies at their final path
+  with copy mode so the release does not depend on the mutable `uv` cache, explicitly grant safe
+  read/traverse permissions despite the installer's private default umask,
   reject release trees that are not root-owned and non-writable by group/other, require the installed
   entrypoint and revision marker to be regular in-release files rather than symlinks, validate every
   remaining symlink's lexical traversal and canonical target before allowing it to resolve inside the

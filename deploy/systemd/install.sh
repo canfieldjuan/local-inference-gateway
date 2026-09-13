@@ -222,6 +222,7 @@ else
   "$uv_bin" venv --python "$python_bin" "$release_dir/venv"
   "$uv_bin" pip install \
     --python "$release_dir/venv/bin/python" \
+    --link-mode copy \
     --constraints "$constraints_file" \
     --build-constraints "$build_constraints_file" \
     "$source_dir"
