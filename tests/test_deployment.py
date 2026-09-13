@@ -414,7 +414,10 @@ def test_model_storage_mount_installer_fails_closed_and_never_activates() -> Non
     assert 'blkid -s UUID -o value "$resolved_device"' in installer
     assert 'findmnt --mountpoint "$resolved_mount"' in installer
     assert '[[ "$mounted_type" == ntfs3 ]]' in installer
-    assert "for required_option in rw nosuid nodev" in installer
+    assert "rw nosuid nodev relatime" in installer
+    assert 'for observed_option in "${observed_options[@]}"' in installer
+    assert '"uid=$owner_uid" | "gid=$owner_gid")' in installer
+    assert "current mount option is outside the supported profile" in installer
     assert "findmnt --verify --tab-file /etc/fstab" in installer
     assert 'findmnt --fstab --evaluate --target "$resolved_mount"' in installer
     assert (
@@ -422,6 +425,8 @@ def test_model_storage_mount_installer_fails_closed_and_never_activates() -> Non
         in installer
     )
     assert "cannot inspect configured /etc/fstab sources" in installer
+    assert 'case "$configured_source" in' in installer
+    assert "/dev/*)" in installer
     assert 'readlink -f -- "$configured_source"' in installer
     assert 'configured_device" != "$resolved_device"' in installer
     assert "status --porcelain --untracked-files=all" in installer

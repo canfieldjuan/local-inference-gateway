@@ -19,9 +19,9 @@ Required change surface:
 - Validate the clean reviewed checkout, block-device identity, mounted filesystem type, exact current
   mount, model-directory containment, local owner UID/GID, safe path syntax, absence of conflicting
   `/etc/fstab` entries, and managed-unit path before mutation.
-- Generate the mount unit name with `systemd-escape`, pin `What=` to `/dev/disk/by-uuid/<uuid>`, keep
-  the current `ntfs3` ownership and safety options, add `nofail` so boot cannot be blocked, and bound
-  the mount command with `TimeoutSec=`.
+- Generate the mount unit name with `systemd-escape`, pin `What=` to `/dev/disk/by-uuid/<uuid>`, and
+  require the exact supported `ntfs3` ownership/safety profile so an additional live restriction is
+  never silently dropped. Add `nofail` so boot cannot be blocked and bound the mount command.
 - Atomically install the mode-0644 native mount unit and reload the system manager. The installer may
   not start, stop, enable, disable, mount, unmount, or edit `/etc/fstab`.
 - Document the explicit post-review enablement and verification path, including the relationship to
@@ -70,8 +70,9 @@ Verification plan:
 
 1. The installer derives a mount-unit filename from the exact mount path and pins the unit to the
    verified existing block device through its filesystem UUID.
-2. The installed unit uses `Type=ntfs3`, preserves the observed owner UID/GID and non-privileged
-   mount options, includes `nofail`, and bounds the mount operation without altering model data.
+2. The installed unit uses `Type=ntfs3`, preserves the supported observed owner UID/GID and safety
+   profile, rejects any additional live option instead of silently dropping it, includes `nofail`,
+   and bounds the mount operation without altering model data.
 3. Missing, mismatched, unmounted, unsafe, symlinked, non-local-owner, or fstab-conflicting inputs fail
    before the managed unit is replaced.
 4. The installer consumes only a clean captured Git revision, installs atomically with root ownership
@@ -84,9 +85,10 @@ Verification plan:
 
 - Added a reviewed native mount-unit template whose `nofail` option keeps normal boot independent of
   model storage, while a 30-second mount timeout and read-write-only behavior fail clearly.
-- Added a root installer that validates the live UUID-backed `ntfs3` mount, owner identity, current
-  safety/ownership options, model containment, fstab conflicts, clean source revision, and managed
-  unit ownership before rendering the template from the captured commit.
+- Added a root installer that validates the live UUID-backed `ntfs3` mount, owner identity, exact
+  supported safety/ownership profile, model containment, fstab conflicts, clean source revision, and
+  managed unit ownership before rendering the template from the captured commit. Unrelated non-device
+  fstab sources are ignored after tag evaluation; conflicting local block devices still fail closed.
 - The installer validates the rendered unit under its path-derived filename, atomically installs it
   with root ownership and mode `0644`, and reloads systemd without changing mount or service state.
 - Documented discovery, reviewed installation, explicit enablement, and the separate maintenance-

@@ -51,6 +51,20 @@ require_mount_option() {
   esac
 }
 
+reject_unsupported_mount_options() {
+  local observed_option
+  local -a observed_options
+
+  IFS=, read -r -a observed_options <<<"$mounted_options"
+  for observed_option in "${observed_options[@]}"; do
+    case "$observed_option" in
+      rw | nosuid | nodev | relatime | acl | iocharset=utf8 | prealloc | uhelper=udisks2 | \
+        "uid=$owner_uid" | "gid=$owner_gid") ;;
+      *) fail "current mount option is outside the supported profile: $observed_option" ;;
+    esac
+  done
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --uuid)
@@ -130,9 +144,11 @@ resolved_mounted_source="$(readlink -f -- "$mounted_source")" ||
 [[ "$resolved_mounted_source" == "$resolved_device" ]] ||
   fail "current mount source does not match the filesystem UUID"
 [[ "$mounted_type" == ntfs3 ]] || fail "current filesystem must use ntfs3"
-for required_option in rw nosuid nodev "uid=$owner_uid" "gid=$owner_gid" acl iocharset=utf8 prealloc; do
+for required_option in \
+  rw nosuid nodev relatime "uid=$owner_uid" "gid=$owner_gid" acl iocharset=utf8 prealloc; do
   require_mount_option "$required_option"
 done
+reject_unsupported_mount_options
 
 findmnt --verify --tab-file /etc/fstab >/dev/null || fail "/etc/fstab is invalid"
 if findmnt --fstab --evaluate --target "$resolved_mount" >/dev/null 2>&1; then
@@ -142,10 +158,15 @@ configured_sources="$(findmnt --fstab --evaluate --noheadings --output SOURCE)" 
   fail "cannot inspect configured /etc/fstab sources"
 while IFS= read -r configured_source; do
   [[ -n "$configured_source" ]] || continue
-  configured_device="$(readlink -f -- "$configured_source")" ||
-    fail "cannot resolve configured /etc/fstab source"
-  [[ "$configured_device" != "$resolved_device" ]] ||
-    fail "/etc/fstab already configures the filesystem device"
+  case "$configured_source" in
+    /dev/*)
+      configured_device="$(readlink -f -- "$configured_source")" ||
+        fail "cannot resolve configured local /etc/fstab source"
+      [[ "$configured_device" != "$resolved_device" ]] ||
+        fail "/etc/fstab already configures the filesystem device"
+      ;;
+    *) ;;
+  esac
 done <<<"$configured_sources"
 
 git --no-optional-locks -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
