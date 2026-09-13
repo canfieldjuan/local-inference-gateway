@@ -123,6 +123,68 @@ export GATEWAY_DEPLOYMENT_ID="development-host"
 uv run local-inference-gateway
 ```
 
+### Persistent private Ollama worker
+
+On a single-user Linux appliance, install Ollama as a persistent systemd user service instead of
+relying on a transient `systemd-run` unit or enabling a vendor unit with unknown listener settings.
+The installer requires user lingering, the expected model filesystem to be mounted already, and an
+existing model directory below that mount. It writes no secret and does not start or enable either
+Ollama service:
+
+```bash
+bash deploy/systemd/install-ollama-user.sh \
+  --model-mount /absolute/model-mount \
+  --models-dir /absolute/model-mount/Ollama/models
+systemctl --user cat local-inference-ollama.service
+```
+
+The installed environment fixes Ollama to `127.0.0.1:11434`, disables cloud access, and admits one
+loaded model and one parallel request with an 8,192-token context. The unit checks that the expected
+filesystem is still an active mount and that the model directory already exists before every start.
+It retries a failed preflight without creating that directory or exhausting systemd's start limit.
+
+After reviewing the installed unit and confirming that any system-level Ollama unit remains disabled,
+replace an existing transient worker explicitly:
+
+```bash
+systemctl --user stop ollama-local.service
+systemctl --user enable --now local-inference-ollama.service
+systemctl --user status local-inference-ollama.service --no-pager
+ss -ltnp 'sport = :11434'
+curl --fail --silent http://127.0.0.1:11434/api/version
+curl --fail --silent http://127.0.0.1:11434/api/tags \
+  | python -c 'import json, sys; names={m.get("name") for m in json.load(sys.stdin).get("models", [])}; sys.exit("configured model unavailable") if "qwen3-30b-a3b:latest" not in names else None'
+
+GATEWAY_BASE_URL=https://127.0.0.1:8787 \
+GATEWAY_CA_FILE=/private/path/gateway-ca.pem \
+GATEWAY_TOKEN_FILE=/private/path/application.token \
+python - <<'PY'
+import json
+import os
+import ssl
+import urllib.request
+
+token = open(os.environ["GATEWAY_TOKEN_FILE"], encoding="ascii").read().strip()
+request = urllib.request.Request(
+    f'{os.environ["GATEWAY_BASE_URL"]}/v1/health',
+    headers={"Authorization": f"Bearer {token}"},
+)
+context = ssl.create_default_context(cafile=os.environ["GATEWAY_CA_FILE"])
+with urllib.request.urlopen(request, context=context, timeout=10) as response:
+    health = json.load(response)
+tasks = health.get("tasks", [])
+if not tasks or any(task.get("status") != "available" for task in tasks):
+    raise SystemExit("gateway tasks unavailable")
+print("gateway_tasks=available")
+PY
+```
+
+The listener inspection must show only loopback, the expected model check must pass, and the
+credential-scoped gateway check must report `gateway_tasks=available`. If the model filesystem is
+mounted by a desktop session rather than during boot, the persistent service remains safely
+unavailable and retries until the mount appears. Headless availability before login therefore
+requires a separately reviewed boot mount; this installer never edits `/etc/fstab` or mounts storage.
+
 ### Optional LM Studio fallback
 
 Fallback is gateway-owned and disabled unless its complete configuration is present. Applications

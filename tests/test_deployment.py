@@ -232,3 +232,99 @@ def test_systemd_installer_neither_provisions_secrets_nor_activates_service() ->
         r"systemctl\s+(?:--[^ ]+\s+)*(?:start|stop|restart|enable|disable)\b",
         installer,
     )
+
+
+def test_ollama_user_unit_is_private_bounded_and_retryable() -> None:
+    unit_path = ROOT / "deploy" / "systemd" / "local-inference-ollama.service"
+    unit = unit_path.read_text(encoding="utf-8")
+
+    assert "EnvironmentFile=%h/.config/local-inference-gateway/ollama-worker.env" in unit
+    assert "ExecStartPre=/usr/bin/mountpoint --quiet ${OLLAMA_MODEL_MOUNT}" in unit
+    assert "ExecStartPre=/usr/bin/test -d ${OLLAMA_MODELS}" in unit
+    assert "ExecStart=/usr/local/bin/ollama serve" in unit
+    assert unit.index("/usr/bin/mountpoint") < unit.index("/usr/local/bin/ollama serve")
+    assert unit.index("/usr/bin/test -d") < unit.index("/usr/local/bin/ollama serve")
+    assert "StartLimitIntervalSec=0" in unit
+    assert "Restart=on-failure" in unit
+    assert "RestartSec=30s" in unit
+    assert "ProtectSystem=strict" in unit
+    assert "ProtectHome=read-only" in unit
+    assert "PrivateDevices" not in unit
+    assert "0.0.0.0" not in unit
+    assert unit.count("ExecStart=") == 1
+
+
+def test_ollama_user_installer_validates_storage_and_never_activates() -> None:
+    installer_path = ROOT / "deploy" / "systemd" / "install-ollama-user.sh"
+    installer = installer_path.read_text(encoding="utf-8")
+
+    assert installer_path.stat().st_mode & 0o111
+    subprocess.run(["bash", "-n", str(installer_path)], check=True)
+    result = subprocess.run(
+        ["bash", str(installer_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr.startswith("usage: ")
+
+    assert '[[ "${EUID:-$(id -u)}" -ne 0 ]]' in installer
+    assert 'ollama_bin="/usr/local/bin/ollama"' in installer
+    assert '[[ -f "$ollama_bin" && -x "$ollama_bin" && ! -L "$ollama_bin" ]]' in installer
+    assert 'validate_root_owned_nonwritable_path "$resolved_ollama"' in installer
+    assert 'loginctl show-user "$current_user" -p Linger --value' in installer
+    assert 'manager_environment="$(systemctl --user show-environment)" ||' in installer
+    assert (
+        'XDG_CONFIG_HOME=*) manager_xdg_config_home="${manager_assignment#XDG_CONFIG_HOME=}"'
+        in installer
+    )
+    assert 'manager_xdg_config_home" == "$home_dir/.config"' in installer
+    assert '[[ "$candidate_path" =~ ^/[A-Za-z0-9._/-]+$ ]]' in installer
+    assert '[[ -d "$model_mount" ]]' in installer
+    assert '[[ -d "$models_dir" ]]' in installer
+    assert '[[ "$model_mount" != / ]]' in installer
+    assert '[[ "$resolved_mount" != / ]]' in installer
+    assert installer.index('[[ "$model_mount" != / ]]') < installer.index(
+        'validate_environment_path "$model_mount"'
+    )
+    assert installer.index('[[ "$resolved_mount" != / ]]') < installer.index(
+        'validate_environment_path "$resolved_mount"'
+    )
+    assert 'mountpoint --quiet "$resolved_mount"' in installer
+    assert '"$resolved_mount"/*' in installer
+    assert '[[ ! -L "$managed_directory" ]]' in installer
+    assert '[[ ! -L "$managed_target" ]]' in installer
+    assert (
+        'checkout_status="$(git --no-optional-locks -C "$repo_dir" status '
+        '--porcelain --untracked-files=all)" ||' in installer
+    )
+    assert 'fail "cannot determine checkout cleanliness"' in installer
+    assert '[[ -z "$checkout_status" ]] || fail "refusing to install a dirty checkout"' in installer
+    assert "rev-parse --verify 'HEAD^{commit}'" in installer
+    assert 'unit_blob="$source_revision:deploy/systemd/$unit_name"' in installer
+    assert 'cat-file -t "$unit_blob"' in installer
+    assert '[[ "$unit_object_type" == blob ]]' in installer
+    assert "OLLAMA_HOST=127.0.0.1:11434" in installer
+    assert "OLLAMA_NO_CLOUD=1" in installer
+    assert "OLLAMA_CONTEXT_LENGTH=8192" in installer
+    assert "OLLAMA_MAX_LOADED_MODELS=1" in installer
+    assert "OLLAMA_NUM_PARALLEL=1" in installer
+    assert "OLLAMA_MODEL_MOUNT" in installer
+    assert 'chmod 0600 "$temporary_environment"' in installer
+    assert 'cat-file blob "$unit_blob" >"$temporary_unit"' in installer
+    assert 'chmod 0644 "$temporary_unit"' in installer
+    assert installer.index('cat-file blob "$unit_blob"') < installer.index(
+        'mv -f -- "$temporary_environment"'
+    )
+    assert 'mv -f -- "$temporary_environment" "$environment_target"' in installer
+    assert 'mv -f -- "$temporary_unit" "$unit_target"' in installer
+    assert "systemctl --user daemon-reload" in installer
+    assert not re.search(
+        r"systemctl\s+(?:--[^ ]+\s+)*(?:start|stop|restart|enable|disable)\b",
+        installer,
+    )
+    assert "/etc/fstab" not in installer
+    assert "mkdir" not in installer
+    assert not re.search(r"(?m)(?:^|[;&|()])\s*(?:source|eval|\.)\s+", installer)
