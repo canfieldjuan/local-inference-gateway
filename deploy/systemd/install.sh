@@ -11,15 +11,19 @@ unit_target="/etc/systemd/system/local-inference-gateway.service"
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 uv_bin="${UV_BIN:-$(command -v uv || true)}"
 python_bin="${PYTHON_BIN:-/usr/bin/python3}"
-build_constraints_file="$repo_dir/deploy/systemd/build-constraints.txt"
 nologin_shell="/usr/sbin/nologin"
+build_constraints_file=""
 constraints_file=""
+source_dir=""
 temporary_link=""
 release_created=false
 
 cleanup() {
   if [[ -n "$constraints_file" ]]; then
     rm -f -- "$constraints_file"
+  fi
+  if [[ -n "$source_dir" && -d "$source_dir" ]]; then
+    rm -rf -- "$source_dir"
   fi
   if [[ "$release_created" == true && -n "${release_dir:-}" && -d "$release_dir" ]]; then
     rm -rf -- "$release_dir"
@@ -36,14 +40,22 @@ fail() {
 }
 
 [[ "${EUID:-$(id -u)}" -eq 0 ]] || fail "run this installer as root"
-for command_name in awk chmod git getent groupadd install ln mktemp mv rm runuser systemctl useradd; do
+for command_name in \
+  awk chmod git getent groupadd install ln mktemp mv readlink rm runuser systemctl tar useradd; do
   command -v "$command_name" >/dev/null 2>&1 || fail "$command_name is required"
 done
 [[ "$uv_bin" == /* && -f "$uv_bin" && -x "$uv_bin" ]] ||
   fail "UV_BIN must name an absolute executable uv path"
 [[ "$python_bin" == /* && -f "$python_bin" && -x "$python_bin" ]] ||
   fail "PYTHON_BIN must name an absolute executable Python path"
-[[ -f "$build_constraints_file" ]] || fail "build constraints are missing"
+resolved_python="$(readlink -f -- "$python_bin")"
+[[ "$resolved_python" == /* && -f "$resolved_python" && -x "$resolved_python" ]] ||
+  fail "PYTHON_BIN does not resolve to an executable Python path"
+case "$resolved_python" in
+  /usr/* | /opt/* | /bin/*) ;;
+  *) fail "PYTHON_BIN must resolve under /usr, /opt, or /bin for the unit sandbox" ;;
+esac
+python_bin="$resolved_python"
 [[ -x "$nologin_shell" ]] || fail "$nologin_shell is required"
 [[ -f /etc/login.defs ]] || fail "/etc/login.defs is required"
 regular_uid_min="$(awk '$1 == "UID_MIN" {print $2; exit}' /etc/login.defs)"
@@ -59,6 +71,10 @@ git -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
 
 source_revision="$(git -C "$repo_dir" rev-parse --verify 'HEAD^{commit}')"
 [[ "$source_revision" =~ ^[0-9a-f]{40}$ ]] || fail "source revision is invalid"
+source_dir="$(mktemp -d)"
+git -C "$repo_dir" archive "$source_revision" | tar -x -C "$source_dir"
+build_constraints_file="$source_dir/deploy/systemd/build-constraints.txt"
+[[ -f "$build_constraints_file" ]] || fail "build constraints are missing"
 release_dir="$release_root/$source_revision"
 release_executable="$release_dir/venv/bin/local-inference-gateway"
 release_python="$release_dir/venv/bin/python"
@@ -116,7 +132,7 @@ else
   install -d -o root -g root -m 0755 "$release_dir"
   release_created=true
   "$uv_bin" export \
-    --project "$repo_dir" \
+    --project "$source_dir" \
     --locked \
     --no-dev \
     --no-emit-project \
@@ -127,17 +143,17 @@ else
     --python "$release_dir/venv/bin/python" \
     --constraints "$constraints_file" \
     --build-constraints "$build_constraints_file" \
-    "$repo_dir"
+    "$source_dir"
   [[ -x "$release_executable" ]] ||
     fail "installed release has no gateway executable"
   printf '%s\n' "$source_revision" >"$release_marker"
   chmod -R go-w "$release_dir"
-  release_created=false
 fi
 
 runuser --user "$service_identity" -- "$release_python" -c \
   'import local_inference_gateway' >/dev/null 2>&1 ||
   fail "service account cannot execute the installed gateway release"
+release_created=false
 
 temporary_link="$install_root/.venv-link.$$"
 ln -s -- "$release_dir/venv" "$temporary_link"
@@ -145,7 +161,7 @@ mv -Tf -- "$temporary_link" "$active_venv"
 temporary_link=""
 
 install -o root -g root -m 0644 \
-  "$repo_dir/deploy/systemd/local-inference-gateway.service" "$unit_target"
+  "$source_dir/deploy/systemd/local-inference-gateway.service" "$unit_target"
 systemctl daemon-reload
 
 echo "Installed Local Inference Gateway revision $source_revision."

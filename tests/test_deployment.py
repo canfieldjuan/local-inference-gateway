@@ -98,13 +98,30 @@ def test_systemd_installer_rejects_incompatible_identity_or_python() -> None:
     assert 'service_shell" == "$nologin_shell"' in installer
     assert 'runuser --user "$service_identity" -- "$python_bin"' in installer
     assert 'runuser --user "$service_identity" -- "$release_python"' in installer
+    assert 'resolved_python="$(readlink -f -- "$python_bin")"' in installer
+    assert "/usr/* | /opt/* | /bin/*" in installer
+    assert "for the unit sandbox" in installer
+
+
+def test_systemd_installer_builds_only_from_captured_revision() -> None:
+    installer = (ROOT / "deploy" / "systemd" / "install.sh").read_text(encoding="utf-8")
+
+    assert 'source_dir="$(mktemp -d)"' in installer
+    assert 'git -C "$repo_dir" archive "$source_revision" | tar -x -C "$source_dir"' in installer
+    assert '--project "$source_dir"' in installer
+    assert '"$source_dir"\n' in installer
+    assert '"$source_dir/deploy/systemd/local-inference-gateway.service"' in installer
+    assert 'rm -rf -- "$source_dir"' in installer
+    assert installer.index('runuser --user "$service_identity" -- "$release_python"') < (
+        installer.rindex("release_created=false")
+    )
 
 
 def test_systemd_installer_neither_provisions_secrets_nor_activates_service() -> None:
     installer = (ROOT / "deploy" / "systemd" / "install.sh").read_text(encoding="utf-8")
 
     assert "GATEWAY_" not in installer
-    assert "/home/" not in installer
+    assert "/home/juan-canfield" not in installer
     assert "openssl" not in installer
     assert "token_hex" not in installer
     assert "systemctl daemon-reload" in installer

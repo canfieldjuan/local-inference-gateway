@@ -200,7 +200,8 @@ service account. Do not add Uvicorn workers or start a second unit against the s
 Run the installer only from the clean revision intended for the appliance. It requires root but
 accepts no credentials or secret values. If `uv` is outside root's PATH, pass its absolute executable
 path explicitly. The default service-readable interpreter is `/usr/bin/python3`; set `PYTHON_BIN` to
-another absolute Python 3.12+ path only when the service identity can execute it:
+another absolute Python 3.12+ path under `/usr`, `/opt`, or `/bin` only when the service identity can
+execute it inside the unit sandbox:
 
 ```bash
 sudo env UV_BIN="$(command -v uv)" PYTHON_BIN=/usr/bin/python3 ./deploy/systemd/install.sh
