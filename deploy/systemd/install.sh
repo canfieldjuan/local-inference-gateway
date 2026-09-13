@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 service_identity="local-inference-gateway"
 install_root="/opt/local-inference-gateway"
@@ -8,6 +9,7 @@ active_venv="$install_root/venv"
 config_dir="/etc/local-inference-gateway"
 state_dir="/var/lib/local-inference-gateway"
 unit_target="/etc/systemd/system/local-inference-gateway.service"
+lock_file="/run/local-inference-gateway-install.lock"
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 uv_bin="${UV_BIN:-$(command -v uv || true)}"
 python_bin="${PYTHON_BIN:-/usr/bin/python3}"
@@ -41,7 +43,8 @@ fail() {
 
 [[ "${EUID:-$(id -u)}" -eq 0 ]] || fail "run this installer as root"
 for command_name in \
-  awk chmod git getent groupadd install ln mktemp mv readlink rm runuser systemctl tar useradd; do
+  awk chmod find flock git getent groupadd install ln mktemp mv readlink rm runuser systemctl tar \
+  useradd; do
   command -v "$command_name" >/dev/null 2>&1 || fail "$command_name is required"
 done
 [[ "$uv_bin" == /* && -f "$uv_bin" && -x "$uv_bin" ]] ||
@@ -75,6 +78,8 @@ source_dir="$(mktemp -d)"
 git -C "$repo_dir" archive "$source_revision" | tar -x -C "$source_dir"
 build_constraints_file="$source_dir/deploy/systemd/build-constraints.txt"
 [[ -f "$build_constraints_file" ]] || fail "build constraints are missing"
+exec 9>"$lock_file"
+flock --exclusive --nonblock 9 || fail "another gateway installation is already running"
 release_dir="$release_root/$source_revision"
 release_executable="$release_dir/venv/bin/local-inference-gateway"
 release_python="$release_dir/venv/bin/python"
@@ -83,6 +88,14 @@ release_marker="$release_dir/SOURCE_REVISION"
 if [[ -e "$active_venv" && ! -L "$active_venv" ]]; then
   fail "$active_venv must be absent or a symbolic link"
 fi
+for managed_path in "$install_root" "$release_root" "$config_dir" "$state_dir"; do
+  [[ ! -L "$managed_path" ]] || fail "managed directory must not be a symbolic link: $managed_path"
+  [[ ! -e "$managed_path" || -d "$managed_path" ]] ||
+    fail "managed path must be absent or a directory: $managed_path"
+done
+[[ ! -L "$unit_target" ]] || fail "unit target must not be a symbolic link: $unit_target"
+[[ ! -e "$unit_target" || -f "$unit_target" ]] ||
+  fail "unit target must be absent or a regular file: $unit_target"
 
 if ! getent group "$service_identity" >/dev/null; then
   groupadd --system "$service_identity"
@@ -150,6 +163,16 @@ else
   chmod -R go-w "$release_dir"
 fi
 
+release_violation="$(
+  find "$release_dir" -xdev \
+    \( ! -user root -o \( \( -type f -o -type d \) -perm /022 \) \) -print -quit
+)"
+[[ -z "$release_violation" ]] || fail "release is not immutable: $release_violation"
+resolved_release_python="$(readlink -f -- "$release_python")"
+if [[ "$resolved_release_python" != "$python_bin" && \
+  "$resolved_release_python" != "$release_dir"/* ]]; then
+  fail "installed Python resolves outside the selected interpreter and release"
+fi
 runuser --user "$service_identity" -- "$release_python" -c \
   'import local_inference_gateway' >/dev/null 2>&1 ||
   fail "service account cannot execute the installed gateway release"

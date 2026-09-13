@@ -117,6 +117,32 @@ def test_systemd_installer_builds_only_from_captured_revision() -> None:
     )
 
 
+def test_systemd_installer_guards_managed_paths_and_serializes_installation() -> None:
+    installer = (ROOT / "deploy" / "systemd" / "install.sh").read_text(encoding="utf-8")
+
+    assert 'lock_file="/run/local-inference-gateway-install.lock"' in installer
+    assert 'exec 9>"$lock_file"' in installer
+    assert "flock --exclusive --nonblock 9" in installer
+    assert (
+        'for managed_path in "$install_root" "$release_root" "$config_dir" "$state_dir"'
+        in installer
+    )
+    assert '[[ ! -L "$managed_path" ]]' in installer
+    assert '[[ ! -e "$managed_path" || -d "$managed_path" ]]' in installer
+    assert '[[ ! -L "$unit_target" ]]' in installer
+    assert 'release_violation="$(' in installer
+    assert 'find "$release_dir" -xdev' in installer
+    assert "! -user root" in installer
+    assert "-perm /022" in installer
+    assert 'readlink -f -- "$release_python"' in installer
+    assert installer.index("flock --exclusive --nonblock 9") < installer.index(
+        'if ! getent group "$service_identity"'
+    )
+    assert installer.index("flock --exclusive --nonblock 9") < installer.index(
+        'if [[ -e "$release_dir" ]]'
+    )
+
+
 def test_systemd_installer_neither_provisions_secrets_nor_activates_service() -> None:
     installer = (ROOT / "deploy" / "systemd" / "install.sh").read_text(encoding="utf-8")
 
