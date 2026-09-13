@@ -32,12 +32,33 @@ then rerun the root installer and verify the service remains disabled and stoppe
 
 ### Implementation summary
 
-Pending.
+- `deploy/systemd/install.sh:224-233` expresses the version gate and path emission as an ordinary
+  multiline Python program: unsupported versions exit before output, while supported versions print
+  their isolated paths without raising the return value of `print`.
+- `tests/test_deployment.py:149-168` extracts that exact embedded program and executes it with the
+  supported isolated test interpreter, requiring successful absolute-path output.
+- All existing runtime admission ordering and system-service lifecycle boundaries remain unchanged.
 
 ### Cold diff audit
 
-Pending.
+- The installer diff changes only the malformed embedded Python expression into a named executable
+  probe; it still runs through the same capability-free identity and feeds the same lexical,
+  canonical, ownership, and unit-visibility checks.
+- The regression test exercises the installer-owned probe itself rather than a duplicated equivalent.
+- No gateway source, dependency, identity policy, runtime-path policy, secret path, or service action
+  changed.
+- Verification reported `8 passed, 2 warnings` for focused deployment tests, `203 passed, 1 skipped,
+  2 warnings` for full pytest, `All checks passed!` for Ruff lint, `32 files already formatted`, no
+  mypy issues in 7 source files, 39 locked packages, successful source/wheel builds, valid Bash
+  syntax, and a clean whitespace diff.
 
 ### Gap audit
 
-NOT DONE.
+DONE.
+
+The root installer rerun remains post-merge operational evidence because a dirty or unmerged checkout
+is intentionally rejected. Private provisioning and service activation remain outside this hotfix.
+
+### Diff size
+
+3 files, +93 / -4.

@@ -221,13 +221,15 @@ IFS=: read -r default_service_name _ default_service_uid default_service_gid _ \
   fail "default NSS does not select the local service account"
 [[ "$(id -G "$service_identity")" == "$service_group_gid" ]] ||
   fail "service account has supplementary group memberships"
+python_runtime_probe='import sys
+
+if sys.version_info < (3, 12):
+    raise SystemExit(2)
+print("\n".join(sys.path))'
 python_runtime_paths="$(
   setpriv --reuid 65534 --regid 65534 --clear-groups \
     --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs \
-    env -i HOME=/nonexistent PATH=/usr/bin:/bin "$python_bin" -I -S -c \
-    'import sys
-
-raise SystemExit(2) if sys.version_info < (3, 12) else print("\n".join(sys.path))'
+    env -i HOME=/nonexistent PATH=/usr/bin:/bin "$python_bin" -I -S -c "$python_runtime_probe"
 )" || fail "cannot safely inspect the selected Python 3.12+ runtime"
 [[ -n "$python_runtime_paths" ]] || fail "selected Python runtime has no import paths"
 while IFS= read -r python_runtime_path; do
