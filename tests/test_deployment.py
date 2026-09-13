@@ -116,6 +116,8 @@ def test_systemd_installer_rejects_incompatible_identity_or_python() -> None:
     assert 'default_service_uid" == "$service_uid"' in installer
     assert 'id -G "$service_identity"' in installer
     assert 'runuser --user "$service_identity" -- "$python_bin"' in installer
+    assert 'print("\\n".join(sys.path))' in installer
+    assert 'validate_root_owned_nonwritable_path "$trusted_runtime_path"' in installer
     assert "os.access(sys.argv[1], os.X_OK)" in installer
     assert '"$release_executable"' in installer
     assert 'resolved_python="$(readlink -f -- "$python_bin")"' in installer
@@ -126,6 +128,9 @@ def test_systemd_installer_rejects_incompatible_identity_or_python() -> None:
     assert 'env -i PATH=/usr/bin:/bin "$release_python" -I -c' in installer
     assert "local_inference_gateway.__file__" in installer
     assert "Path(sys.prefix).resolve()" in installer
+    assert "import local_inference_gateway.__main__ as gateway_main" in installer
+    assert "callable(gateway_main.main)" in installer
+    assert 'runpy.run_path(sys.argv[1], run_name="__main__")' in installer
     assert 'entrypoint_shebang" == "#!$release_python"' in installer
 
 

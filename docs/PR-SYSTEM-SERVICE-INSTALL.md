@@ -71,10 +71,11 @@ Verification plan:
    the active release.
 2. The installed release path contains the full source commit identity and is populated completely
    before the active symlink changes.
-3. A rerun for the same clean commit is idempotent and reuses only an entrypoint whose shebang names
-   the validated release interpreter and which is proven executable by the service identity; release
-   symlinks traverse only root-owned non-writable paths and resolve inside the immutable tree or to
-   root-owned non-writable regular files.
+3. A rerun for the same clean commit is idempotent and reuses only an interpreter whose isolated
+   runtime search paths are root-owned and non-writable and an entrypoint whose shebang names that
+   interpreter, whose real console target imports, and whose wrapper is proven executable by the
+   service identity; release symlinks traverse only root-owned non-writable paths and resolve inside
+   the immutable tree or to root-owned non-writable regular files.
 4. The installer creates no secret-bearing file and never reads secret values or application data.
 5. The installer performs daemon reload but contains no service start, stop, restart, enable, or
    disable operation.
@@ -92,10 +93,10 @@ Verification plan:
   copied under an empty environment with configuration discovery disabled into a root-owned,
   service-readable commit-addressed release, rejects incomplete, mismatched, mutable, or externally
   redirected releases including every unsafe symlink traversal and target, rejects redirected managed
-  paths, serializes installers, flips the active virtual-environment symlink only after the entrypoint
-  names the release interpreter, the service identity can execute it, and an isolated service-user
-  import resolves inside the release environment, installs the snapshot's reviewed unit, and performs
-  only `daemon-reload`.
+  paths, serializes installers, flips the active virtual-environment symlink only after the base
+  interpreter search paths are trusted, the entrypoint names the release interpreter, the service
+  identity can execute the real wrapper/target, and an isolated service-user import resolves inside
+  the release environment, installs the snapshot's reviewed unit, and performs only `daemon-reload`.
 - `deploy/systemd/build-constraints.txt` pins the complete isolated Hatchling build environment used
   by the installer so one commit-addressed release does not resolve differently over time.
 - `tests/test_deployment.py` now exercises shell syntax and non-root rejection and asserts the clean
@@ -114,7 +115,7 @@ Verification plan:
   creates or validates the local-files-only non-login system identity against the host's regular
   UID/GID boundary, verifies default NSS selects the same account and group, rejects supplementary
   group membership, and proves that identity can execute Python only after every canonical interpreter
-  path component is root-owned and non-writable;
+  path component and every isolated base-runtime import path are root-owned and non-writable;
   it also rejects symlinked/non-directory private paths before changing their ownership and takes a
   host-wide nonblocking installer lock. This satisfies contract items 1 and 2 and is covered by
   `tests/test_deployment.py` plus `bash -n`.
@@ -127,9 +128,9 @@ Verification plan:
   entrypoint and revision marker to be regular in-release files rather than symlinks, validate every
   remaining symlink's lexical traversal and canonical target before allowing it to resolve inside the
   release or to a root-owned non-writable external regular file, require the configured entrypoint
-  shebang to name the validated release interpreter, prove the entrypoint is executable under the
-  service identity, and prove in an isolated environment that the service identity imports the package
-  from the active release prefix;
+  shebang to name the validated release interpreter, execute the actual generated wrapper with a
+  harmless substituted target under the service identity, and prove in an isolated environment that
+  the service identity imports the real console target from the active release prefix;
   it retains the incomplete-release cleanup guard through that proof and atomically replaces the
   active symlink afterward. This satisfies contract items 3 and 4 and is covered by
   `tests/test_deployment.py`.
@@ -148,7 +149,9 @@ Verification plan:
   the private umask reproduced mode `700`; the installer's permission normalization changed both the
   virtual-environment root and `bin` directory to mode `755`. The curated wrapper successfully ran
   `uv 0.10.10` with an empty environment while the trust-path probe rejected the current
-  user-writable `/home/juan-canfield/.local/bin/uv` path.
+  user-writable `/home/juan-canfield/.local/bin/uv` path. Runtime probes accepted the isolated
+  `/usr/lib/python312.zip`, `/usr/lib/python3.12`, and `/usr/lib/python3.12/lib-dynload` search paths
+  and executed the generated console wrapper through its declared target without starting the server.
 - No untraced runtime, dependency, schema, routing, model, credential, application, or service-state
   change appears in the diff.
 

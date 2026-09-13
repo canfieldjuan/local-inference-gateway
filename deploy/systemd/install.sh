@@ -206,6 +206,23 @@ IFS=: read -r default_service_name _ default_service_uid default_service_gid _ \
 runuser --user "$service_identity" -- "$python_bin" -c \
   'import sys; raise SystemExit(sys.version_info < (3, 12))' >/dev/null 2>&1 ||
   fail "service account cannot execute the selected Python 3.12+ interpreter"
+python_runtime_paths="$(
+  runuser --user "$service_identity" -- \
+    env -i PATH=/usr/bin:/bin "$python_bin" -I -S -c \
+    'import sys; print("\n".join(sys.path))'
+)" || fail "cannot inspect the selected Python runtime paths"
+[[ -n "$python_runtime_paths" ]] || fail "selected Python runtime has no import paths"
+while IFS= read -r python_runtime_path; do
+  [[ "$python_runtime_path" == /* ]] || fail "selected Python runtime path is not absolute"
+  if [[ -e "$python_runtime_path" ]]; then
+    trusted_runtime_path="$(readlink -f -- "$python_runtime_path")" ||
+      fail "cannot resolve selected Python runtime path: $python_runtime_path"
+  else
+    trusted_runtime_path="$(readlink -f -- "${python_runtime_path%/*}")" ||
+      fail "cannot resolve selected Python runtime parent: $python_runtime_path"
+  fi
+  validate_root_owned_nonwritable_path "$trusted_runtime_path"
+done <<<"$python_runtime_paths"
 
 install -d -o root -g root -m 0755 "$install_root" "$release_root"
 install -d -o root -g "$service_identity" -m 0750 "$config_dir"
@@ -261,6 +278,28 @@ import sys
 raise SystemExit(not os.access(sys.argv[1], os.X_OK))' \
   "$release_executable" >/dev/null 2>&1 ||
   fail "service account cannot execute the installed gateway entrypoint"
+runuser --user "$service_identity" -- \
+  env -i PATH=/usr/bin:/bin "$release_python" -I -c \
+  'import runpy
+import sys
+import types
+
+called = []
+
+def main():
+    called.append(True)
+
+target = types.ModuleType("local_inference_gateway.__main__")
+target.main = main
+sys.modules[target.__name__] = target
+try:
+    runpy.run_path(sys.argv[1], run_name="__main__")
+except SystemExit as error:
+    if error.code not in (None, 0):
+        raise
+raise SystemExit(not called)' \
+  "$release_executable" >/dev/null 2>&1 ||
+  fail "installed gateway entrypoint does not invoke its declared console target"
 resolved_release_python="$(readlink -f -- "$release_python")"
 if [[ "$resolved_release_python" != "$python_bin" && \
   "$resolved_release_python" != "$release_dir"/* ]]; then
@@ -270,10 +309,17 @@ runuser --user "$service_identity" -- \
   env -i PATH=/usr/bin:/bin "$release_python" -I -c \
   'from pathlib import Path
 import local_inference_gateway
+import local_inference_gateway.__main__ as gateway_main
 import sys
 
 module_path = Path(local_inference_gateway.__file__).resolve()
-raise SystemExit(not module_path.is_relative_to(Path(sys.prefix).resolve()))' \
+main_path = Path(gateway_main.__file__).resolve()
+release_prefix = Path(sys.prefix).resolve()
+raise SystemExit(
+    not module_path.is_relative_to(release_prefix)
+    or not main_path.is_relative_to(release_prefix)
+    or not callable(gateway_main.main)
+)' \
   >/dev/null 2>&1 ||
   fail "service account cannot execute the installed gateway release"
 release_created=false
