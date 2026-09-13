@@ -100,11 +100,11 @@ Verification plan:
 - `deploy/systemd/install-ollama-user.sh` installs only non-secret user configuration after all
   executable, identity, mount, containment, checkout, and managed-path checks. Atomic replacements
   and `daemon-reload` trace to acceptance criteria 4 and 5; an unreadable Git status fails closed,
-  and no service lifecycle command exists.
+  the installed unit bytes come from the verified commit blob, and no service lifecycle command exists.
 - `tests/test_deployment.py` covers unit ordering/privacy/retry declarations, installer syntax and
   admission controls, fixed environment values, atomic targets, and lifecycle/mount non-mutation.
-- `README.md` documents installation, explicit activation, loopback inspection, and the separate
-  operator-owned headless boot-mount requirement.
+- `README.md` documents installation, explicit activation, loopback inspection, exact model
+  visibility, credential-scoped gateway recovery, and the separate operator-owned boot-mount requirement.
 - Boundary probe: unsafe path syntax, a directory that is not a mount point, and a models directory
   outside the configured mount all failed before mutation. Valid current storage reached the clean-
   checkout gate. A disposable transient unit recorded one failed preflight restart and became active

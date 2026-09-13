@@ -152,12 +152,38 @@ systemctl --user enable --now local-inference-ollama.service
 systemctl --user status local-inference-ollama.service --no-pager
 ss -ltnp 'sport = :11434'
 curl --fail --silent http://127.0.0.1:11434/api/version
+curl --fail --silent http://127.0.0.1:11434/api/tags \
+  | python -c 'import json, sys; names={m.get("name") for m in json.load(sys.stdin).get("models", [])}; sys.exit("configured model unavailable") if "qwen3-30b-a3b:latest" not in names else None'
+
+GATEWAY_BASE_URL=https://127.0.0.1:8787 \
+GATEWAY_CA_FILE=/private/path/gateway-ca.pem \
+GATEWAY_TOKEN_FILE=/private/path/application.token \
+python - <<'PY'
+import json
+import os
+import ssl
+import urllib.request
+
+token = open(os.environ["GATEWAY_TOKEN_FILE"], encoding="ascii").read().strip()
+request = urllib.request.Request(
+    f'{os.environ["GATEWAY_BASE_URL"]}/v1/health',
+    headers={"Authorization": f"Bearer {token}"},
+)
+context = ssl.create_default_context(cafile=os.environ["GATEWAY_CA_FILE"])
+with urllib.request.urlopen(request, context=context, timeout=10) as response:
+    health = json.load(response)
+tasks = health.get("tasks", [])
+if not tasks or any(task.get("status") != "available" for task in tasks):
+    raise SystemExit("gateway tasks unavailable")
+print("gateway_tasks=available")
+PY
 ```
 
-The listener inspection must show only loopback. If the model filesystem is mounted by a desktop
-session rather than during boot, the persistent service remains safely unavailable and retries until
-the mount appears. Headless availability before login therefore requires a separately reviewed boot
-mount; this installer never edits `/etc/fstab` or mounts storage.
+The listener inspection must show only loopback, the expected model check must pass, and the
+credential-scoped gateway check must report `gateway_tasks=available`. If the model filesystem is
+mounted by a desktop session rather than during boot, the persistent service remains safely
+unavailable and retries until the mount appears. Headless availability before login therefore
+requires a separately reviewed boot mount; this installer never edits `/etc/fstab` or mounts storage.
 
 ### Optional LM Studio fallback
 

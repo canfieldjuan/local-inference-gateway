@@ -5,7 +5,6 @@ export PATH="/usr/local/bin:/usr/bin:/bin"
 
 unit_name="local-inference-ollama.service"
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-unit_source="$repo_dir/deploy/systemd/$unit_name"
 ollama_bin="/usr/local/bin/ollama"
 model_mount=""
 models_dir=""
@@ -118,7 +117,13 @@ git --no-optional-locks -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/nul
 checkout_status="$(git --no-optional-locks -C "$repo_dir" status --porcelain --untracked-files=all)" ||
   fail "cannot determine checkout cleanliness"
 [[ -z "$checkout_status" ]] || fail "refusing to install a dirty checkout"
-[[ -f "$unit_source" && ! -L "$unit_source" ]] || fail "reviewed user unit is missing"
+source_revision="$(git --no-optional-locks -C "$repo_dir" rev-parse --verify 'HEAD^{commit}')" ||
+  fail "cannot determine source revision"
+[[ "$source_revision" =~ ^[0-9a-f]{40}$ ]] || fail "source revision is invalid"
+unit_blob="$source_revision:deploy/systemd/$unit_name"
+unit_object_type="$(git --no-optional-locks -C "$repo_dir" cat-file -t "$unit_blob")" ||
+  fail "reviewed user unit is missing from the source revision"
+[[ "$unit_object_type" == blob ]] || fail "reviewed user unit is not a regular Git blob"
 
 config_dir="$home_dir/.config/local-inference-gateway"
 user_unit_dir="$home_dir/.config/systemd/user"
@@ -152,7 +157,9 @@ temporary_unit="$(mktemp "$user_unit_dir/.${unit_name}.XXXXXX")"
     'OLLAMA_NUM_PARALLEL=1'
 } >"$temporary_environment"
 chmod 0600 "$temporary_environment"
-install -m 0644 "$unit_source" "$temporary_unit"
+git --no-optional-locks -C "$repo_dir" cat-file blob "$unit_blob" >"$temporary_unit" ||
+  fail "cannot read the reviewed user unit from the source revision"
+chmod 0644 "$temporary_unit"
 mv -f -- "$temporary_environment" "$environment_target"
 temporary_environment=""
 mv -f -- "$temporary_unit" "$unit_target"

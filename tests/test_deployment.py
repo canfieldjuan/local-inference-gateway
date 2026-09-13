@@ -289,6 +289,10 @@ def test_ollama_user_installer_validates_storage_and_never_activates() -> None:
     )
     assert 'fail "cannot determine checkout cleanliness"' in installer
     assert '[[ -z "$checkout_status" ]] || fail "refusing to install a dirty checkout"' in installer
+    assert "rev-parse --verify 'HEAD^{commit}'" in installer
+    assert 'unit_blob="$source_revision:deploy/systemd/$unit_name"' in installer
+    assert 'cat-file -t "$unit_blob"' in installer
+    assert '[[ "$unit_object_type" == blob ]]' in installer
     assert "OLLAMA_HOST=127.0.0.1:11434" in installer
     assert "OLLAMA_NO_CLOUD=1" in installer
     assert "OLLAMA_CONTEXT_LENGTH=8192" in installer
@@ -296,6 +300,11 @@ def test_ollama_user_installer_validates_storage_and_never_activates() -> None:
     assert "OLLAMA_NUM_PARALLEL=1" in installer
     assert "OLLAMA_MODEL_MOUNT" in installer
     assert 'chmod 0600 "$temporary_environment"' in installer
+    assert 'cat-file blob "$unit_blob" >"$temporary_unit"' in installer
+    assert 'chmod 0644 "$temporary_unit"' in installer
+    assert installer.index('cat-file blob "$unit_blob"') < installer.index(
+        'mv -f -- "$temporary_environment"'
+    )
     assert 'mv -f -- "$temporary_environment" "$environment_target"' in installer
     assert 'mv -f -- "$temporary_unit" "$unit_target"' in installer
     assert "systemctl --user daemon-reload" in installer
@@ -305,4 +314,4 @@ def test_ollama_user_installer_validates_storage_and_never_activates() -> None:
     )
     assert "/etc/fstab" not in installer
     assert "mkdir" not in installer
-    assert not re.search(r"\b(?:source|eval)\b", installer)
+    assert not re.search(r"(?m)(?:^|[;&|()])\s*(?:source|eval|\.)\s+", installer)
