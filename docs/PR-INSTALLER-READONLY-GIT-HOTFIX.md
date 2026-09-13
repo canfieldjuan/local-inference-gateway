@@ -33,12 +33,34 @@ stopped/disabled service state.
 
 ### Implementation summary
 
-Pending.
+- `deploy/systemd/install.sh:138-146` applies Git's `--no-optional-locks` mode to all four checkout
+  reads: repository admission, cleanliness, revision capture, and archive export.
+- `tests/test_deployment.py:56-59,176-180` requires all four guarded forms, rejects the old raw form,
+  and preserves the archive-only build assertion.
+- Release creation, identity/runtime admission, unit installation, and service lifecycle behavior are
+  unchanged.
 
 ### Cold diff audit
 
-Pending.
+- Every changed installer token is the no-optional-lock global Git option; commands, arguments, and
+  ordering otherwise remain identical.
+- The regression assertion closes the complete four-call class rather than checking only the
+  `git status` instance that reproduced the ownership damage.
+- No gateway source, release content, dependency, identity/runtime policy, secret path, or service
+  action changed.
+- Verification reported `8 passed, 2 warnings` for focused deployment tests, `203 passed, 1 skipped,
+  2 warnings` for full pytest, `All checks passed!` for Ruff lint, `33 files already formatted`, no
+  mypy issues in 7 source files, 39 locked packages, successful source/wheel builds, valid Bash
+  syntax, and a clean whitespace diff.
 
 ### Gap audit
 
-NOT DONE.
+DONE.
+
+The before/after checkout-owner comparison remains post-merge operational evidence because the
+installer intentionally rejects an uncommitted checkout. Private provisioning and service activation
+remain outside this hotfix.
+
+### Diff size
+
+3 files, +76 / -5.

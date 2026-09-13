@@ -135,15 +135,15 @@ regular_gid_min="$(awk '$1 == "GID_MIN" {print $2; exit}' /etc/login.defs)"
   fail "UID_MIN is invalid"
 [[ "$regular_gid_min" =~ ^[0-9]+$ && "$regular_gid_min" -gt 0 ]] ||
   fail "GID_MIN is invalid"
-git -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
+git --no-optional-locks -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
   fail "installer must run from a Git checkout"
-[[ -z "$(git -C "$repo_dir" status --porcelain --untracked-files=all)" ]] ||
+[[ -z "$(git --no-optional-locks -C "$repo_dir" status --porcelain --untracked-files=all)" ]] ||
   fail "refusing to install a dirty checkout"
 
-source_revision="$(git -C "$repo_dir" rev-parse --verify 'HEAD^{commit}')"
+source_revision="$(git --no-optional-locks -C "$repo_dir" rev-parse --verify 'HEAD^{commit}')"
 [[ "$source_revision" =~ ^[0-9a-f]{40}$ ]] || fail "source revision is invalid"
 source_dir="$(mktemp -d)"
-git -C "$repo_dir" archive "$source_revision" | tar -x -C "$source_dir"
+git --no-optional-locks -C "$repo_dir" archive "$source_revision" | tar -x -C "$source_dir"
 build_constraints_file="$source_dir/deploy/systemd/build-constraints.txt"
 [[ -f "$build_constraints_file" ]] || fail "build constraints are missing"
 exec 9>"$lock_file"
