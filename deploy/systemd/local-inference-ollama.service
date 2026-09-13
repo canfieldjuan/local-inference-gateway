@@ -1,0 +1,28 @@
+[Unit]
+Description=Private Ollama worker for Local Inference Gateway
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/local-inference-gateway/ollama-worker.env
+ExecStartPre=/usr/bin/mountpoint --quiet ${OLLAMA_MODEL_MOUNT}
+ExecStartPre=/usr/bin/test -d ${OLLAMA_MODELS}
+ExecStart=/usr/local/bin/ollama serve
+Restart=on-failure
+RestartSec=30s
+TimeoutStopSec=30s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=read-only
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=default.target
