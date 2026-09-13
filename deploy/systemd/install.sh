@@ -238,6 +238,14 @@ release_violation="$(
 )"
 [[ -z "$release_violation" ]] || fail "release is not immutable: $release_violation"
 validate_release_symlinks
+runuser --user "$service_identity" -- \
+  env -i PATH=/usr/bin:/bin "$python_bin" -I -c \
+  'import os
+import sys
+
+raise SystemExit(not os.access(sys.argv[1], os.X_OK))' \
+  "$release_executable" >/dev/null 2>&1 ||
+  fail "service account cannot execute the installed gateway entrypoint"
 resolved_release_python="$(readlink -f -- "$release_python")"
 if [[ "$resolved_release_python" != "$python_bin" && \
   "$resolved_release_python" != "$release_dir"/* ]]; then

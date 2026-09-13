@@ -109,6 +109,8 @@ def test_systemd_installer_rejects_incompatible_identity_or_python() -> None:
     assert 'default_service_uid" == "$service_uid"' in installer
     assert 'id -G "$service_identity"' in installer
     assert 'runuser --user "$service_identity" -- "$python_bin"' in installer
+    assert "os.access(sys.argv[1], os.X_OK)" in installer
+    assert '"$release_executable"' in installer
     assert 'resolved_python="$(readlink -f -- "$python_bin")"' in installer
     assert "/usr/* | /opt/* | /bin/*" in installer
     assert "for the unit sandbox" in installer
