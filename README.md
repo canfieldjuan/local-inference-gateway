@@ -183,7 +183,55 @@ The listener inspection must show only loopback, the expected model check must p
 credential-scoped gateway check must report `gateway_tasks=available`. If the model filesystem is
 mounted by a desktop session rather than during boot, the persistent service remains safely
 unavailable and retries until the mount appears. Headless availability before login therefore
-requires a separately reviewed boot mount; this installer never edits `/etc/fstab` or mounts storage.
+requires the separately reviewed system mount below; the user-service installer never edits
+`/etc/fstab` or mounts storage.
+
+### Pre-login model storage
+
+First confirm the intended filesystem is already mounted with the expected model directory. Record
+its filesystem UUID from the block-device output rather than relying on a mutable `/dev/nvme*` name:
+
+```bash
+findmnt --target /absolute/model-mount --output SOURCE,TARGET,FSTYPE,OPTIONS
+lsblk --fs --output NAME,PATH,FSTYPE,LABEL,UUID,MOUNTPOINTS
+```
+
+From a clean reviewed gateway revision, install a native systemd mount unit. The installer verifies
+the current UUID, block device, `ntfs3` mount, local owner, containment, safety options, and absence of
+a conflicting fstab entry before atomically installing the unit. It does not edit `/etc/fstab`,
+mount or unmount storage, or change service lifecycle:
+
+```bash
+sudo bash deploy/systemd/install-model-mount.sh \
+  --uuid FILESYSTEM_UUID \
+  --mount-point /absolute/model-mount \
+  --models-dir /absolute/model-mount/Ollama/models \
+  --owner-user LOCAL_USER
+
+mount_unit="$(systemd-escape --path --suffix=mount /absolute/model-mount)"
+sudo systemctl cat "$mount_unit"
+sudo systemctl show "$mount_unit" -p FragmentPath -p What -p Where -p Type -p Options
+```
+
+The generated unit uses the stable `/dev/disk/by-uuid/` path and `nofail`, so unavailable model
+storage cannot block normal system boot. Review the output, then enable the already-active mount for
+future boots without remounting the live filesystem:
+
+```bash
+sudo systemctl enable "$mount_unit"
+sudo systemctl is-enabled "$mount_unit"
+sudo systemctl is-active "$mount_unit"
+loginctl show-user LOCAL_USER -p Linger
+systemctl --user is-enabled local-inference-ollama.service
+systemctl --user is-active local-inference-ollama.service
+```
+
+Do not claim pre-login acceptance from enablement alone. During a separately authorized maintenance
+reboot, leave the desktop logged out and inspect through the host's administrative console or SSH.
+Acceptance requires the UUID-backed mount to be active, the lingering Ollama user unit to be active,
+port 11434 to remain loopback-only, the configured model to be visible, and authenticated gateway
+tasks to report available. If the disk is absent, boot must still complete while Ollama remains
+unavailable and retryable; never enable the unsafe vendor system Ollama service as a workaround.
 
 ### Optional LM Studio fallback
 
