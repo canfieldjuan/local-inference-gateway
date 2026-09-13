@@ -249,6 +249,9 @@ def test_ollama_user_unit_is_private_bounded_and_retryable() -> None:
     assert "RestartSec=30s" in unit
     assert "ProtectSystem=strict" in unit
     assert "ProtectHome=read-only" in unit
+    assert "ProtectClock" not in unit
+    assert "ProtectKernelLogs" not in unit
+    assert "ProtectKernelModules" not in unit
     assert "PrivateDevices" not in unit
     assert "0.0.0.0" not in unit
     assert unit.count("ExecStart=") == 1
