@@ -66,6 +66,10 @@ TASK_POLICIES = MappingProxyType(
             temperature=0.1,
             max_output_tokens=1_500,
         ),
+        ("invoice.extract.batch", 1): TaskPolicy(
+            temperature=0.0,
+            max_output_tokens=12_288,
+        ),
     }
 )
 
