@@ -14,6 +14,7 @@ from .contracts import MAX_REQUEST_BYTES
 
 MAX_CONFIG_BYTES = 128 * 1024
 MAX_TLS_FILE_BYTES = 1024 * 1024
+MAX_PRIVATE_TOKEN_BYTES = 16 * 1024
 MAX_CREDENTIALS = 100
 TOKEN_DIGEST_LENGTH = 64
 PRIVATE_BIND_NETWORKS = (
@@ -135,13 +136,13 @@ def _read_private_json(path: Path, label: str) -> dict[str, object]:
     return document
 
 
-def _loopback_worker_url(value: str) -> str:
+def _loopback_worker_url(value: str, label: str) -> str:
     try:
         parsed = urlsplit(value)
         address = ipaddress.ip_address(parsed.hostname or "")
         port = parsed.port
     except (ValueError, UnicodeError) as exc:
-        raise ConfigurationError("Ollama URL is invalid") from exc
+        raise ConfigurationError(f"{label} URL is invalid") from exc
     if (
         parsed.scheme != "http"
         or not address.is_loopback
@@ -152,8 +153,39 @@ def _loopback_worker_url(value: str) -> str:
         or parsed.query
         or parsed.fragment
     ):
-        raise ConfigurationError("Ollama must use an explicit loopback HTTP authority")
+        raise ConfigurationError(f"{label} must use an explicit loopback HTTP authority")
     return f"http://{f'[{address}]' if address.version == 6 else address}:{port}"
+
+
+def read_private_token(path: Path, label: str) -> str:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+        with os.fdopen(descriptor, "rb") as stream:
+            metadata = os.fstat(stream.fileno())
+            mode = stat.S_IMODE(metadata.st_mode)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or not 0 < metadata.st_size <= MAX_PRIVATE_TOKEN_BYTES
+                or (os.name == "posix" and mode & 0o077)
+            ):
+                raise ConfigurationError(f"{label} token file must be owner-private")
+            encoded = stream.read(MAX_PRIVATE_TOKEN_BYTES + 1)
+    except ConfigurationError:
+        raise
+    except OSError as exc:
+        raise ConfigurationError(f"{label} token file is unavailable") from exc
+    try:
+        token = encoded.decode("ascii").strip()
+    except UnicodeDecodeError as exc:
+        raise ConfigurationError(f"{label} token is invalid") from exc
+    if (
+        not 32 <= len(token) <= 512
+        or not token.isascii()
+        or any(character.isspace() for character in token)
+    ):
+        raise ConfigurationError(f"{label} token is invalid")
+    return token
 
 
 def _validate_tls_file(path: Path, label: str, *, owner_private: bool) -> None:
@@ -177,6 +209,31 @@ def _validate_tls_file(path: Path, label: str, *, owner_private: bool) -> None:
 
 
 @dataclass(frozen=True)
+class LMStudioFallbackSettings:
+    base_url: str
+    model: str
+    token_path: Path
+    idle_ttl_seconds: int = 300
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "base_url",
+            _loopback_worker_url(self.base_url, "LM Studio"),
+        )
+        if (
+            not self.model
+            or self.model != self.model.strip()
+            or len(self.model) > 512
+            or any(character.isspace() for character in self.model)
+        ):
+            raise ConfigurationError("LM Studio model identifier is invalid")
+        if type(self.idle_ttl_seconds) is not int or not 1 <= self.idle_ttl_seconds <= 3_600:
+            raise ConfigurationError("LM Studio idle TTL is invalid")
+        read_private_token(self.token_path, "LM Studio")
+
+
+@dataclass(frozen=True)
 class Settings:
     database_path: Path
     credentials_path: Path
@@ -184,6 +241,7 @@ class Settings:
     ollama_base_url: str
     ollama_model: str
     deployment_id: str
+    lm_studio_fallback: LMStudioFallbackSettings | None = None
     bind_host: str = "127.0.0.1"
     bind_port: int = 8787
     tls_certificate_path: Path | None = None
@@ -198,7 +256,11 @@ class Settings:
     maintenance_interval_seconds: float = 30.0
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "ollama_base_url", _loopback_worker_url(self.ollama_base_url))
+        object.__setattr__(
+            self,
+            "ollama_base_url",
+            _loopback_worker_url(self.ollama_base_url, "Ollama"),
+        )
         if not self.ollama_model.strip() or len(self.ollama_model) > 256:
             raise ConfigurationError("Ollama model identifier is invalid")
         if not self.deployment_id or len(self.deployment_id) > 128:
@@ -268,6 +330,25 @@ class Settings:
         values["maintenance_interval_seconds"] = _environment_float(
             "GATEWAY_MAINTENANCE_INTERVAL_SECONDS", 30.0
         )
+        fallback_variables = {
+            "base_url": "GATEWAY_LM_STUDIO_URL",
+            "model": "GATEWAY_LM_STUDIO_MODEL",
+            "token_path": "GATEWAY_LM_STUDIO_TOKEN_FILE",
+        }
+        fallback_values = {
+            field: os.environ.get(variable) for field, variable in fallback_variables.items()
+        }
+        configured = [variable in os.environ for variable in fallback_variables.values()]
+        ttl_configured = "GATEWAY_LM_STUDIO_IDLE_TTL_SECONDS" in os.environ
+        if any(configured) or ttl_configured:
+            if not all(configured) or any(not value for value in fallback_values.values()):
+                raise ConfigurationError("LM Studio fallback configuration must be complete")
+            values["lm_studio_fallback"] = LMStudioFallbackSettings(
+                base_url=fallback_values["base_url"],  # type: ignore[arg-type]
+                model=fallback_values["model"],  # type: ignore[arg-type]
+                token_path=Path(fallback_values["token_path"]),  # type: ignore[arg-type]
+                idle_ttl_seconds=_environment_int("GATEWAY_LM_STUDIO_IDLE_TTL_SECONDS", 300),
+            )
         return cls(**values)  # type: ignore[arg-type]
 
 

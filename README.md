@@ -6,9 +6,11 @@ independent of Ollama, LM Studio, GPU placement, and future runtime changes.
 
 Current milestone: authenticated, durable `email.analyze@1`, `email.schedule.extract@1`,
 `document.summary.step@1`, and `invoice.extract.batch@1` lifecycles backed by Ollama, with an
-explicit TLS-only private-LAN listener for a single-process Linux appliance. LM Studio fallback,
-remaining application cutovers, certificate automation, and public-Internet deployment remain
-deferred.
+explicit TLS-only private-LAN listener for a single-process Linux appliance. An optional
+authenticated LM Studio worker can handle an eligible request only when the gateway proves before
+dispatch that the configured Ollama model is unavailable and Ollama reports no resident model.
+Remaining application deployment cutovers, certificate automation, and public-Internet deployment
+remain deferred.
 
 ## Security model
 
@@ -120,6 +122,35 @@ export GATEWAY_OLLAMA_MODEL="qwen3-30b-a3b:latest"
 export GATEWAY_DEPLOYMENT_ID="development-host"
 uv run local-inference-gateway
 ```
+
+### Optional LM Studio fallback
+
+Fallback is gateway-owned and disabled unless its complete configuration is present. Applications
+continue to submit the same task contract and cannot select Ollama, LM Studio, or a model. Configure
+LM Studio itself to bind only to loopback, require API-token authentication, enable JIT model
+loading, auto-unload unused JIT models, and keep only the last JIT-loaded model. The fallback model
+must be independently qualified for every published task and must be the same pinned checkpoint and
+quantization as the Ollama primary.
+
+Store the LM Studio API token in an owner-private regular file, then add the following service
+environment values:
+
+```bash
+export GATEWAY_LM_STUDIO_URL="http://127.0.0.1:1234"
+export GATEWAY_LM_STUDIO_MODEL="qwen_qwen3-30b-a3b-instruct-2507"
+export GATEWAY_LM_STUDIO_TOKEN_FILE="/etc/local-inference-gateway/lm-studio.token"
+export GATEWAY_LM_STUDIO_IDLE_TTL_SECONDS="300"
+```
+
+The model identifier is the appliance's pinned LM Studio API identifier, never an application
+setting. The idle TTL is bounded to 1 through 3600 seconds. Any partial configuration, unsafe token
+file, remote/plaintext worker URL, unknown Ollama residency, loaded Ollama model, missing fallback
+model, or failed fallback authentication leaves the task unavailable.
+
+The gateway never switches workers after calling Ollama inference. Authentication, authorization,
+schema, task-policy, application-validation, timeout, and ambiguous primary failures therefore do
+not cause duplicate execution on LM Studio. This slice does not start or stop either worker, load or
+unload models explicitly, create tokens, or alter LM Studio server settings.
 
 Expiry maintenance runs every 30 seconds by default. Operators may set
 `GATEWAY_MAINTENANCE_INTERVAL_SECONDS` to a bounded interval between 0.01 and 3600 seconds.

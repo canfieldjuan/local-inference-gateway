@@ -7,7 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from local_inference_gateway.config import ConfigurationError, CredentialStore, Settings
+from local_inference_gateway.config import (
+    ConfigurationError,
+    CredentialStore,
+    LMStudioFallbackSettings,
+    Settings,
+    read_private_token,
+)
 from tests.conftest import TOKEN
 
 
@@ -37,6 +43,13 @@ def write_tls_files(tmp_path: Path) -> tuple[Path, Path]:
     key.write_text("test private key", encoding="ascii")
     key.chmod(0o600)
     return certificate, key
+
+
+def write_token(tmp_path: Path, mode: int = 0o600) -> Path:
+    token = tmp_path / "lm-studio.token"
+    token.write_text("lm-studio-private-test-token-000000", encoding="ascii")
+    token.chmod(mode)
+    return token
 
 
 def test_credentials_load_hashes_and_authenticate_without_plaintext(tmp_path: Path) -> None:
@@ -155,6 +168,142 @@ def test_settings_preserve_loopback_http_default(tmp_path: Path) -> None:
     assert settings.bind_host == "127.0.0.1"
     assert settings.tls_certificate_path is None
     assert settings.tls_key_path is None
+    assert settings.lm_studio_fallback is None
+
+
+def test_lm_studio_fallback_requires_private_token_and_bounded_loopback_config(
+    tmp_path: Path,
+) -> None:
+    token = write_token(tmp_path)
+
+    fallback = LMStudioFallbackSettings(
+        base_url="http://127.0.0.1:1234/",
+        model="pinned-fallback-model",
+        token_path=token,
+        idle_ttl_seconds=300,
+    )
+
+    assert fallback.base_url == "http://127.0.0.1:1234"
+    assert read_private_token(token, "LM Studio") == "lm-studio-private-test-token-000000"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ({"base_url": "http://192.168.1.20:1234"}, "loopback"),
+        ({"model": ""}, "model identifier"),
+        ({"model": " padded-model"}, "model identifier"),
+        ({"idle_ttl_seconds": 0}, "idle TTL"),
+        ({"idle_ttl_seconds": 3_601}, "idle TTL"),
+        ({"idle_ttl_seconds": True}, "idle TTL"),
+    ],
+)
+def test_lm_studio_fallback_rejects_unsafe_or_unbounded_settings(
+    tmp_path: Path, mutation: dict[str, object], message: str
+) -> None:
+    values: dict[str, object] = {
+        "base_url": "http://127.0.0.1:1234",
+        "model": "pinned-fallback-model",
+        "token_path": write_token(tmp_path),
+        "idle_ttl_seconds": 300,
+    }
+    values.update(mutation)
+
+    with pytest.raises(ConfigurationError, match=message):
+        LMStudioFallbackSettings(**values)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("idle_ttl_seconds", [1, 3_600])
+def test_lm_studio_fallback_accepts_idle_ttl_boundaries(
+    tmp_path: Path, idle_ttl_seconds: int
+) -> None:
+    fallback = LMStudioFallbackSettings(
+        base_url="http://127.0.0.1:1234",
+        model="pinned-fallback-model",
+        token_path=write_token(tmp_path),
+        idle_ttl_seconds=idle_ttl_seconds,
+    )
+
+    assert fallback.idle_ttl_seconds == idle_ttl_seconds
+
+
+def test_lm_studio_fallback_rejects_nonprivate_token_file(tmp_path: Path) -> None:
+    token = write_token(tmp_path, mode=0o644)
+
+    with pytest.raises(ConfigurationError, match="owner-private"):
+        LMStudioFallbackSettings(
+            base_url="http://127.0.0.1:1234",
+            model="pinned-fallback-model",
+            token_path=token,
+        )
+
+
+def test_settings_from_env_reads_complete_lm_studio_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    token = write_token(tmp_path)
+    environment = {
+        "GATEWAY_DATABASE_FILE": str(tmp_path / "db"),
+        "GATEWAY_CREDENTIALS_FILE": str(tmp_path / "credentials"),
+        "GATEWAY_ENCRYPTION_KEY_FILE": str(tmp_path / "result-key"),
+        "GATEWAY_OLLAMA_URL": "http://127.0.0.1:11434",
+        "GATEWAY_OLLAMA_MODEL": "primary-model",
+        "GATEWAY_DEPLOYMENT_ID": "deployment",
+        "GATEWAY_LM_STUDIO_URL": "http://127.0.0.1:1234",
+        "GATEWAY_LM_STUDIO_MODEL": "fallback-model",
+        "GATEWAY_LM_STUDIO_TOKEN_FILE": str(token),
+        "GATEWAY_LM_STUDIO_IDLE_TTL_SECONDS": "120",
+    }
+    for name, value in environment.items():
+        monkeypatch.setenv(name, value)
+
+    settings = Settings.from_env()
+
+    assert settings.lm_studio_fallback == LMStudioFallbackSettings(
+        "http://127.0.0.1:1234", "fallback-model", token, 120
+    )
+
+
+@pytest.mark.parametrize(
+    "configured",
+    [
+        {"GATEWAY_LM_STUDIO_URL": "http://127.0.0.1:1234"},
+        {"GATEWAY_LM_STUDIO_MODEL": "fallback-model"},
+        {"GATEWAY_LM_STUDIO_TOKEN_FILE": "/private/missing-token"},
+        {"GATEWAY_LM_STUDIO_IDLE_TTL_SECONDS": "120"},
+        {"GATEWAY_LM_STUDIO_URL": ""},
+        {"GATEWAY_LM_STUDIO_MODEL": ""},
+        {"GATEWAY_LM_STUDIO_TOKEN_FILE": ""},
+        {
+            "GATEWAY_LM_STUDIO_URL": "",
+            "GATEWAY_LM_STUDIO_MODEL": "",
+            "GATEWAY_LM_STUDIO_TOKEN_FILE": "",
+        },
+    ],
+)
+def test_settings_from_env_rejects_partial_lm_studio_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, configured: dict[str, str]
+) -> None:
+    environment = {
+        "GATEWAY_DATABASE_FILE": str(tmp_path / "db"),
+        "GATEWAY_CREDENTIALS_FILE": str(tmp_path / "credentials"),
+        "GATEWAY_ENCRYPTION_KEY_FILE": str(tmp_path / "result-key"),
+        "GATEWAY_OLLAMA_URL": "http://127.0.0.1:11434",
+        "GATEWAY_OLLAMA_MODEL": "primary-model",
+        "GATEWAY_DEPLOYMENT_ID": "deployment",
+    }
+    for name in (
+        "GATEWAY_LM_STUDIO_URL",
+        "GATEWAY_LM_STUDIO_MODEL",
+        "GATEWAY_LM_STUDIO_TOKEN_FILE",
+        "GATEWAY_LM_STUDIO_IDLE_TTL_SECONDS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in (environment | configured).items():
+        monkeypatch.setenv(name, value)
+
+    with pytest.raises(ConfigurationError, match="configuration must be complete"):
+        Settings.from_env()
 
 
 @pytest.mark.parametrize("bind_host", ["192.168.1.50", "fd12:3456:789a::50"])
