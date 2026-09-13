@@ -13,6 +13,7 @@ from local_inference_gateway.worker import (
     InvalidWorkerOutput,
     LMStudioWorker,
     OllamaWorker,
+    WorkerAvailability,
     WorkerOutcomeAmbiguous,
     WorkerResult,
     WorkerUnavailable,
@@ -43,28 +44,57 @@ class StubWorker:
         self.result = result
         self.error = error
         self.health_calls: list[tuple[str, int] | None] = []
+        self.health_timeouts: list[float] = []
         self.infer_calls = 0
+        self.infer_timeouts: list[float] = []
 
-    def health(self, task: tuple[str, int] | None = None) -> bool:
+    def health(
+        self,
+        task: tuple[str, int] | None = None,
+        timeout_seconds: float = 5.0,
+    ) -> bool:
         self.health_calls.append(task)
+        self.health_timeouts.append(timeout_seconds)
         return self.available
 
     def infer(self, request: InferenceRequest, timeout_seconds: float) -> WorkerResult:
-        del request, timeout_seconds
+        del request
         self.infer_calls += 1
+        self.infer_timeouts.append(timeout_seconds)
         if self.error is not None:
             raise self.error
         return WorkerResult("application/json", self.result)
 
 
 class StubPrimary(StubWorker):
-    def __init__(self, *, available: bool, capacity_available: bool, error=None) -> None:  # type: ignore[no-untyped-def]
+    def __init__(
+        self,
+        *,
+        available: bool,
+        capacity_available: bool,
+        error=None,  # type: ignore[no-untyped-def]
+        availability: WorkerAvailability | None = None,
+    ) -> None:
         super().__init__(available=available, result='{"worker":"primary"}', error=error)
         self.capacity_available = capacity_available
         self.capacity_calls = 0
+        self.capacity_timeouts: list[float] = []
+        self.availability_state = availability or (
+            WorkerAvailability.AVAILABLE if available else WorkerAvailability.UNAVAILABLE
+        )
+        self.availability_calls: list[tuple[tuple[str, int] | None, float]] = []
 
-    def fallback_capacity_available(self) -> bool:
+    def availability(
+        self,
+        task: tuple[str, int] | None = None,
+        timeout_seconds: float = 5.0,
+    ) -> WorkerAvailability:
+        self.availability_calls.append((task, timeout_seconds))
+        return self.availability_state
+
+    def fallback_capacity_available(self, timeout_seconds: float = 5.0) -> bool:
         self.capacity_calls += 1
+        self.capacity_timeouts.append(timeout_seconds)
         return self.capacity_available
 
 
@@ -105,6 +135,33 @@ def test_worker_health_requires_exact_configured_model() -> None:
         )
     )
     assert worker.health() is False
+    assert worker.availability() is WorkerAvailability.UNAVAILABLE
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(503),
+        httpx.Response(
+            200,
+            headers={"Content-Type": "application/json"},
+            stream=httpx.ByteStream(json.dumps({"data": "invalid"}).encode()),
+        ),
+        httpx.Response(
+            200,
+            headers={"Content-Type": "application/json"},
+            stream=httpx.ByteStream(
+                json.dumps({"data": [{"id": "different-model"}, {"id": 7}]}).encode()
+            ),
+        ),
+    ],
+)
+def test_worker_availability_keeps_unknown_distinct_from_proven_missing(
+    response: httpx.Response,
+) -> None:
+    worker = worker_with_handler(lambda request: response)
+
+    assert worker.availability() is WorkerAvailability.UNKNOWN
 
 
 @pytest.mark.parametrize("models", [[], [{"name": "resident-model"}], "invalid"])
@@ -214,6 +271,74 @@ def test_fallback_worker_uses_fallback_only_before_primary_submission(gateway) -
     assert primary.capacity_calls == 1
     assert fallback.health_calls == [("email.analyze", 1)]
     assert fallback.infer_calls == 1
+
+
+def test_fallback_worker_rejects_unknown_primary_without_capacity_probe(gateway) -> None:  # type: ignore[no-untyped-def]
+    primary = StubPrimary(
+        available=False,
+        capacity_available=True,
+        availability=WorkerAvailability.UNKNOWN,
+    )
+    fallback = StubWorker(available=True, result='{"worker":"fallback"}')
+    worker = FallbackWorker(
+        primary,  # type: ignore[arg-type]
+        fallback,
+        frozenset({("email.analyze", 1)}),
+    )
+
+    with pytest.raises(WorkerUnavailable, match="safely available"):
+        worker.infer(InferenceRequest.model_validate(gateway.request()), 30)
+
+    assert primary.capacity_calls == 0
+    assert primary.infer_calls == 0
+    assert fallback.health_calls == []
+    assert fallback.infer_calls == 0
+
+
+def test_fallback_worker_does_not_dispatch_after_routing_deadline(
+    gateway,
+    monkeypatch: pytest.MonkeyPatch,  # type: ignore[no-untyped-def]
+) -> None:
+    ticks = iter([100.0, 100.0, 100.6])
+    monkeypatch.setattr("local_inference_gateway.worker.time.monotonic", lambda: next(ticks))
+    primary = StubPrimary(available=True, capacity_available=True)
+    fallback = StubWorker(available=True, result='{"worker":"fallback"}')
+    worker = FallbackWorker(
+        primary,  # type: ignore[arg-type]
+        fallback,
+        frozenset({("email.analyze", 1)}),
+    )
+
+    with pytest.raises(WorkerUnavailable, match="deadline expired"):
+        worker.infer(InferenceRequest.model_validate(gateway.request()), 0.5)
+
+    assert primary.infer_calls == 0
+    assert primary.capacity_calls == 0
+    assert fallback.health_calls == []
+    assert fallback.infer_calls == 0
+
+
+def test_fallback_worker_does_not_dispatch_fallback_after_routing_deadline(
+    gateway,
+    monkeypatch: pytest.MonkeyPatch,  # type: ignore[no-untyped-def]
+) -> None:
+    ticks = iter([100.0, 100.0, 100.1, 100.2, 100.6])
+    monkeypatch.setattr("local_inference_gateway.worker.time.monotonic", lambda: next(ticks))
+    primary = StubPrimary(available=False, capacity_available=True)
+    fallback = StubWorker(available=True, result='{"worker":"fallback"}')
+    worker = FallbackWorker(
+        primary,  # type: ignore[arg-type]
+        fallback,
+        frozenset({("email.analyze", 1)}),
+    )
+
+    with pytest.raises(WorkerUnavailable, match="deadline expired"):
+        worker.infer(InferenceRequest.model_validate(gateway.request()), 0.5)
+
+    assert primary.infer_calls == 0
+    assert primary.capacity_calls == 1
+    assert fallback.health_calls == [("email.analyze", 1)]
+    assert fallback.infer_calls == 0
 
 
 @pytest.mark.parametrize(

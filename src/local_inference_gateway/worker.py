@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from dataclasses import dataclass
+from enum import Enum
 from typing import Protocol
 
 import httpx
@@ -44,8 +46,18 @@ class WorkerResult:
     content: str
 
 
+class WorkerAvailability(Enum):
+    AVAILABLE = "available"
+    UNAVAILABLE = "unavailable"
+    UNKNOWN = "unknown"
+
+
 class InferenceWorker(Protocol):
-    def health(self, task: tuple[str, int] | None = None) -> bool: ...
+    def health(
+        self,
+        task: tuple[str, int] | None = None,
+        timeout_seconds: float = 5.0,
+    ) -> bool: ...
 
     def infer(self, request: InferenceRequest, timeout_seconds: float) -> WorkerResult: ...
 
@@ -55,40 +67,57 @@ class OllamaWorker:
         self.base_url = base_url
         self.model = model
 
-    def health(self, task: tuple[str, int] | None = None) -> bool:
+    def health(
+        self,
+        task: tuple[str, int] | None = None,
+        timeout_seconds: float = 5.0,
+    ) -> bool:
+        return self.availability(task, timeout_seconds) is WorkerAvailability.AVAILABLE
+
+    def availability(
+        self,
+        task: tuple[str, int] | None = None,
+        timeout_seconds: float = 5.0,
+    ) -> WorkerAvailability:
         del task
         try:
-            return asyncio.run(self._health())
+            return asyncio.run(self._availability(timeout_seconds))
         except (TimeoutError, httpx.HTTPError, InvalidWorkerOutput):
-            return False
+            return WorkerAvailability.UNKNOWN
 
-    async def _health(self) -> bool:
-        async with asyncio.timeout(5.0):
+    async def _availability(self, timeout_seconds: float) -> WorkerAvailability:
+        async with asyncio.timeout(timeout_seconds):
             async with (
-                self._client(5.0) as client,
+                self._client(timeout_seconds) as client,
                 client.stream("GET", f"{self.base_url}/v1/models") as response,
             ):
                 if response.status_code != 200:
-                    return False
+                    return WorkerAvailability.UNKNOWN
                 document = await _bounded_json(response)
             models = document.get("data")
-            return isinstance(models, list) and any(
-                isinstance(item, dict) and item.get("id") == self.model for item in models
-            )
+            if not isinstance(models, list):
+                return WorkerAvailability.UNKNOWN
+            model_ids: list[str] = []
+            for item in models:
+                if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+                    return WorkerAvailability.UNKNOWN
+                model_ids.append(item["id"])
+            available = self.model in model_ids
+            return WorkerAvailability.AVAILABLE if available else WorkerAvailability.UNAVAILABLE
 
     def infer(self, request: InferenceRequest, timeout_seconds: float) -> WorkerResult:
         return asyncio.run(self._infer(request, timeout_seconds))
 
-    def fallback_capacity_available(self) -> bool:
+    def fallback_capacity_available(self, timeout_seconds: float = 5.0) -> bool:
         try:
-            return asyncio.run(self._fallback_capacity_available())
+            return asyncio.run(self._fallback_capacity_available(timeout_seconds))
         except (TimeoutError, httpx.HTTPError, InvalidWorkerOutput):
             return False
 
-    async def _fallback_capacity_available(self) -> bool:
-        async with asyncio.timeout(5.0):
+    async def _fallback_capacity_available(self, timeout_seconds: float) -> bool:
+        async with asyncio.timeout(timeout_seconds):
             async with (
-                self._client(5.0) as client,
+                self._client(timeout_seconds) as client,
                 client.stream("GET", f"{self.base_url}/api/ps") as response,
             ):
                 if response.status_code != 200:
@@ -158,7 +187,8 @@ class LMStudioWorker(OllamaWorker):
         self._token = token
         self._idle_ttl_seconds = idle_ttl_seconds
 
-    def fallback_capacity_available(self) -> bool:
+    def fallback_capacity_available(self, timeout_seconds: float = 5.0) -> bool:
+        del timeout_seconds
         return False
 
     def _payload(self, request: InferenceRequest) -> dict[str, object]:
@@ -189,26 +219,47 @@ class FallbackWorker:
         self.fallback = fallback
         self.eligible_tasks = eligible_tasks
 
-    def health(self, task: tuple[str, int] | None = None) -> bool:
-        if self.primary.health(task):
-            return True
-        return self._fallback_ready(task)
+    def health(
+        self,
+        task: tuple[str, int] | None = None,
+        timeout_seconds: float = 15.0,
+    ) -> bool:
+        try:
+            deadline = time.monotonic() + timeout_seconds
+            availability = self.primary.availability(task, self._remaining(deadline))
+            if availability is WorkerAvailability.AVAILABLE:
+                return True
+            return availability is WorkerAvailability.UNAVAILABLE and self._fallback_ready(
+                task, deadline
+            )
+        except WorkerUnavailable:
+            return False
 
     def infer(self, request: InferenceRequest, timeout_seconds: float) -> WorkerResult:
+        deadline = time.monotonic() + timeout_seconds
         task = (request.task.id, request.task.version)
-        if self.primary.health(task):
-            return self.primary.infer(request, timeout_seconds)
-        if not self._fallback_ready(task):
+        availability = self.primary.availability(task, self._remaining(deadline))
+        if availability is WorkerAvailability.AVAILABLE:
+            return self.primary.infer(request, self._remaining(deadline))
+        if availability is not WorkerAvailability.UNAVAILABLE or not self._fallback_ready(
+            task, deadline
+        ):
             raise WorkerUnavailable("no worker is safely available before dispatch")
-        return self.fallback.infer(request, timeout_seconds)
+        return self.fallback.infer(request, self._remaining(deadline))
 
-    def _fallback_ready(self, task: tuple[str, int] | None) -> bool:
-        return (
-            task is not None
-            and task in self.eligible_tasks
-            and self.primary.fallback_capacity_available()
-            and self.fallback.health(task)
-        )
+    def _fallback_ready(self, task: tuple[str, int] | None, deadline: float) -> bool:
+        if task is None or task not in self.eligible_tasks:
+            return False
+        if not self.primary.fallback_capacity_available(self._remaining(deadline)):
+            return False
+        return self.fallback.health(task, self._remaining(deadline))
+
+    @staticmethod
+    def _remaining(deadline: float) -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise WorkerUnavailable("worker routing deadline expired before dispatch")
+        return remaining
 
 
 def _validated_result(request: InferenceRequest, document: dict[str, object]) -> WorkerResult:

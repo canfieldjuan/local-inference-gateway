@@ -44,7 +44,12 @@ class FakeWorker:
         self.result_content = '{"summary":"private generated result"}'
         self.task_health: dict[tuple[str, int], bool] = {}
 
-    def health(self, task: tuple[str, int] | None = None) -> bool:
+    def health(
+        self,
+        task: tuple[str, int] | None = None,
+        timeout_seconds: float = 5.0,
+    ) -> bool:
+        del timeout_seconds
         if task is not None and task in self.task_health:
             return self.task_health[task]
         return self.available

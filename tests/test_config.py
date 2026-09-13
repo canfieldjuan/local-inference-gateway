@@ -271,6 +271,14 @@ def test_settings_from_env_reads_complete_lm_studio_fallback(
         {"GATEWAY_LM_STUDIO_MODEL": "fallback-model"},
         {"GATEWAY_LM_STUDIO_TOKEN_FILE": "/private/missing-token"},
         {"GATEWAY_LM_STUDIO_IDLE_TTL_SECONDS": "120"},
+        {"GATEWAY_LM_STUDIO_URL": ""},
+        {"GATEWAY_LM_STUDIO_MODEL": ""},
+        {"GATEWAY_LM_STUDIO_TOKEN_FILE": ""},
+        {
+            "GATEWAY_LM_STUDIO_URL": "",
+            "GATEWAY_LM_STUDIO_MODEL": "",
+            "GATEWAY_LM_STUDIO_TOKEN_FILE": "",
+        },
     ],
 )
 def test_settings_from_env_rejects_partial_lm_studio_fallback(

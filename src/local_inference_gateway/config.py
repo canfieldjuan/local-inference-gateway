@@ -330,15 +330,18 @@ class Settings:
         values["maintenance_interval_seconds"] = _environment_float(
             "GATEWAY_MAINTENANCE_INTERVAL_SECONDS", 30.0
         )
-        fallback_values = {
-            "base_url": os.environ.get("GATEWAY_LM_STUDIO_URL"),
-            "model": os.environ.get("GATEWAY_LM_STUDIO_MODEL"),
-            "token_path": os.environ.get("GATEWAY_LM_STUDIO_TOKEN_FILE"),
+        fallback_variables = {
+            "base_url": "GATEWAY_LM_STUDIO_URL",
+            "model": "GATEWAY_LM_STUDIO_MODEL",
+            "token_path": "GATEWAY_LM_STUDIO_TOKEN_FILE",
         }
-        configured = [bool(value) for value in fallback_values.values()]
+        fallback_values = {
+            field: os.environ.get(variable) for field, variable in fallback_variables.items()
+        }
+        configured = [variable in os.environ for variable in fallback_variables.values()]
         ttl_configured = "GATEWAY_LM_STUDIO_IDLE_TTL_SECONDS" in os.environ
         if any(configured) or ttl_configured:
-            if not all(configured):
+            if not all(configured) or any(not value for value in fallback_values.values()):
                 raise ConfigurationError("LM Studio fallback configuration must be complete")
             values["lm_studio_fallback"] = LMStudioFallbackSettings(
                 base_url=fallback_values["base_url"],  # type: ignore[arg-type]

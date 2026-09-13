@@ -102,9 +102,11 @@ Verification plan:
 - Added `LMStudioWorker` on the existing bounded OpenAI-compatible transport. It authenticates with
   the configured bearer token and adds the configured JIT `ttl` to each completion request.
 - Added `FallbackWorker` as a pre-dispatch router. Ollama remains primary; fallback is admitted only
-  for published tasks when the primary model is unavailable, Ollama's canonical `/api/ps` response
-  is exactly empty, and LM Studio reports the configured model. No exception after an Ollama infer
-  call can route to LM Studio.
+  for published tasks when the primary model is proven unavailable, Ollama's canonical `/api/ps`
+  response is exactly empty, and LM Studio reports the configured model. Unknown primary health is
+  distinct from proven unavailability and fails closed. One monotonic deadline bounds every routing
+  probe and the selected inference call, so probe time cannot permit a dispatch after request expiry.
+  No exception after an Ollama infer call can route to LM Studio.
 - Made health checks task-aware while preserving the existing task-only public response. Worker,
   model, token, and capacity identities remain private to the gateway.
 - Documented the optional appliance configuration and added configuration, boundary, routing,
@@ -119,12 +121,14 @@ Verification plan:
 - `src/local_inference_gateway/config.py` owns fallback admission configuration and reads the token
   without following symlinks or accepting a non-private/non-regular file.
 - `src/local_inference_gateway/worker.py` owns runtime selection and shares only payload/result
-  validation. The primary is checked first, the fallback capacity check is fail-closed, and there
+  validation. The primary is checked first with a tri-state availability result, the fallback
+  capacity check is fail-closed, one remaining deadline crosses every probe and dispatch, and there
   is no exception handler around primary inference that could trigger a second dispatch.
 - `src/local_inference_gateway/app.py` constructs the router only from a complete optional setting
   and reports availability per authorized task without adding worker identity to the response.
 - `tests/` independently exercises the allowed and refused sides of configuration, capacity,
-  task eligibility, transport authentication/TTL, task health, and post-primary failure routing.
+  task eligibility, unknown primary state, routing-deadline exhaustion on both worker paths,
+  transport authentication/TTL, task health, and post-primary failure routing.
 - `README.md` is the only operator-facing surface changed. No task, request, result, storage,
   authorization, replay, acknowledgement, application, or Connect contract changed.
 - Effect trace: the fallback claim is controlled by `FallbackWorker._fallback_ready`; tests prove
