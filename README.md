@@ -198,17 +198,20 @@ service account. Do not add Uvicorn workers or start a second unit against the s
 ### Install the system service snapshot
 
 Run the installer only from the clean revision intended for the appliance. It requires root but
-accepts no credentials or secret values. If `uv` is outside root's PATH, pass its absolute executable
-path explicitly. The default service-readable interpreter is `/usr/bin/python3`; set `PYTHON_BIN` to
-another absolute Python 3.12+ path under `/usr`, `/opt`, or `/bin` only when the service identity can
-execute it inside the unit sandbox:
+accepts no credentials or secret values. The selected `uv` executable and its complete resolved path
+must be root-owned and non-writable by group or other; stage a trusted user installation into a
+root-controlled path before invoking the installer. The default service-readable interpreter is
+`/usr/bin/python3`; set `PYTHON_BIN` to another absolute Python 3.12+ path under `/usr`, `/opt`, or
+`/bin` only when the service identity can execute it inside the unit sandbox:
 
 ```bash
-sudo env UV_BIN="$(command -v uv)" PYTHON_BIN=/usr/bin/python3 ./deploy/systemd/install.sh
+sudo install -o root -g root -m 0755 "$(command -v uv)" /usr/local/bin/uv
+sudo env UV_BIN=/usr/local/bin/uv PYTHON_BIN=/usr/bin/python3 ./deploy/systemd/install.sh
 ```
 
 The installer creates the dedicated system identity and empty private directories, installs locked
-production dependencies and the isolated build backend under
+production dependencies and the isolated build backend in a curated environment with `uv`
+configuration discovery disabled under
 `/opt/local-inference-gateway/releases/<full-commit>`, atomically points
 `/opt/local-inference-gateway/venv` at that complete release, installs the reviewed unit, and reloads
 systemd. It deliberately does not create secrets, enable the unit, or start it. Prior releases remain

@@ -16,8 +16,8 @@ Root cause:
 Required change surface:
 
 1. Add one root-run systemd installer that accepts no secret values and refuses a dirty tracked
-   checkout, missing `git`/`uv`/Python/systemd prerequisites, an incompatible existing service
-   identity, or an unsupported existing install shape.
+   checkout, missing `git`/systemd prerequisites, externally writable `uv`/Python executables, an
+   incompatible existing service identity, or an unsupported existing install shape.
 2. Create the existing `local-inference-gateway` system identity when absent and keep the shipped
    unit's single-process, dedicated-user, protected-state topology unchanged.
 3. Export locked production constraints, pin the isolated build environment, and install the current
@@ -46,8 +46,8 @@ Explicit non-scope:
 
 Assumptions and blockers:
 
-- The target is a systemd Linux appliance with root access, `git`, `uv`, and a service-readable
-  Python 3.12+ interpreter available.
+- The target is a systemd Linux appliance with root access, `git`, a root-controlled `uv`, and a
+  service-readable Python 3.12+ interpreter available.
 - Private configuration will use `/etc/local-inference-gateway`; mutable gateway state will use
   `/var/lib/local-inference-gateway`; the package snapshot lives under `/opt`.
 - The gateway must remain stopped until the operator supplies a complete private environment,
@@ -66,14 +66,15 @@ Verification plan:
 ### Acceptance criteria
 
 1. A non-root caller, dirty tracked checkout, missing prerequisite, non-local, default-NSS-mismatched,
-   or supplementary-group service identity, interpreter outside a root-owned non-writable path,
+   or supplementary-group service identity, `uv` or Python outside a root-owned non-writable path,
    inaccessible Python, or regular file/directory at the activation path is rejected before changing
    the active release.
 2. The installed release path contains the full source commit identity and is populated completely
    before the active symlink changes.
-3. A rerun for the same clean commit is idempotent and reuses only an entrypoint proven executable by
-   the service identity whose release symlinks traverse only root-owned non-writable paths and resolve
-   inside the immutable tree or to root-owned non-writable regular files.
+3. A rerun for the same clean commit is idempotent and reuses only an entrypoint whose shebang names
+   the validated release interpreter and which is proven executable by the service identity; release
+   symlinks traverse only root-owned non-writable paths and resolve inside the immutable tree or to
+   root-owned non-writable regular files.
 4. The installer creates no secret-bearing file and never reads secret values or application data.
 5. The installer performs daemon reload but contains no service start, stop, restart, enable, or
    disable operation.
@@ -86,13 +87,15 @@ Verification plan:
 
 - `deploy/systemd/install.sh` now requires a local-files-only dedicated identity selected identically
   by default NSS with no supplementary groups and a service-readable interpreter whose full canonical
-  path is root-owned and non-writable, captures the selected commit into a root-owned snapshot,
-  installs that snapshot with locked runtime and build dependencies copied into a root-owned,
+  path is root-owned and non-writable, requires the same trust boundary for `uv`, captures the selected
+  commit into a root-owned snapshot, installs that snapshot with locked runtime and build dependencies
+  copied under an empty environment with configuration discovery disabled into a root-owned,
   service-readable commit-addressed release, rejects incomplete, mismatched, mutable, or externally
   redirected releases including every unsafe symlink traversal and target, rejects redirected managed
-  paths, serializes installers, flips the active virtual-environment symlink only after the service
-  identity can execute the configured entrypoint and an isolated service-user import resolves inside
-  the release environment, installs the snapshot's reviewed unit, and performs only `daemon-reload`.
+  paths, serializes installers, flips the active virtual-environment symlink only after the entrypoint
+  names the release interpreter, the service identity can execute it, and an isolated service-user
+  import resolves inside the release environment, installs the snapshot's reviewed unit, and performs
+  only `daemon-reload`.
 - `deploy/systemd/build-constraints.txt` pins the complete isolated Hatchling build environment used
   by the installer so one commit-addressed release does not resolve differently over time.
 - `tests/test_deployment.py` now exercises shell syntax and non-root rejection and asserts the clean
@@ -105,8 +108,9 @@ Verification plan:
 
 ### Cold diff audit
 
-- `deploy/systemd/install.sh` defines fixed system paths and fail-closed admission for root,
-  prerequisites, absolute executable `uv`/Python paths, a Git checkout, and a clean worktree; it
+- `deploy/systemd/install.sh` defines a fixed safe command path and fail-closed admission for root,
+  prerequisites, root-owned non-writable absolute executable `uv`/Python paths, a Git checkout, and a
+  clean worktree; its `uv` wrapper clears ambient settings and disables configuration discovery; it
   creates or validates the local-files-only non-login system identity against the host's regular
   UID/GID boundary, verifies default NSS selects the same account and group, rejects supplementary
   group membership, and proves that identity can execute Python only after every canonical interpreter
@@ -122,9 +126,10 @@ Verification plan:
   reject release trees that are not root-owned and non-writable by group/other, require the installed
   entrypoint and revision marker to be regular in-release files rather than symlinks, validate every
   remaining symlink's lexical traversal and canonical target before allowing it to resolve inside the
-  release or to a root-owned non-writable external regular file, prove the configured entrypoint is
-  executable under the service identity, and prove in an isolated environment that the service
-  identity imports the package from the active release prefix;
+  release or to a root-owned non-writable external regular file, require the configured entrypoint
+  shebang to name the validated release interpreter, prove the entrypoint is executable under the
+  service identity, and prove in an isolated environment that the service identity imports the package
+  from the active release prefix;
   it retains the incomplete-release cleanup guard through that proof and atomically replaces the
   active symlink afterward. This satisfies contract items 3 and 4 and is covered by
   `tests/test_deployment.py`.
@@ -141,7 +146,9 @@ Verification plan:
   interpreter link while rejecting writable `/tmp` ancestry and a writable external release target;
   default and files-only NSS both resolved root to UID 0 on the target host. A fresh `uv venv` under
   the private umask reproduced mode `700`; the installer's permission normalization changed both the
-  virtual-environment root and `bin` directory to mode `755`.
+  virtual-environment root and `bin` directory to mode `755`. The curated wrapper successfully ran
+  `uv 0.10.10` with an empty environment while the trust-path probe rejected the current
+  user-writable `/home/juan-canfield/.local/bin/uv` path.
 - No untraced runtime, dependency, schema, routing, model, credential, application, or service-state
   change appears in the diff.
 

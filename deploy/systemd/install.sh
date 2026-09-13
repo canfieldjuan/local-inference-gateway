@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 umask 077
+export PATH="/usr/sbin:/usr/bin:/sbin:/bin"
 
 service_identity="local-inference-gateway"
 install_root="/opt/local-inference-gateway"
@@ -41,6 +42,10 @@ fail() {
   exit 1
 }
 
+uv_command() {
+  env -i HOME=/root PATH="$PATH" "$uv_bin" --no-config "$@"
+}
+
 validate_root_owned_nonwritable_path() {
   local candidate_path="$1"
   local current_path=""
@@ -55,10 +60,10 @@ validate_root_owned_nonwritable_path() {
   done
   for current_path in "${checked_paths[@]}"; do
     metadata="$(stat -Lc '%u %a' -- "$current_path")" ||
-      fail "cannot inspect interpreter path component: $current_path"
+      fail "cannot inspect trusted path component: $current_path"
     read -r path_owner path_mode <<<"$metadata"
     [[ "$path_owner" == 0 && "$((8#$path_mode & 0022))" -eq 0 ]] ||
-      fail "interpreter path component is not root-owned and non-writable: $current_path"
+      fail "trusted path component is not root-owned and non-writable: $current_path"
   done
 }
 
@@ -96,6 +101,11 @@ for command_name in \
 done
 [[ "$uv_bin" == /* && -f "$uv_bin" && -x "$uv_bin" ]] ||
   fail "UV_BIN must name an absolute executable uv path"
+resolved_uv="$(readlink -f -- "$uv_bin")"
+[[ "$resolved_uv" == /* && -f "$resolved_uv" && -x "$resolved_uv" ]] ||
+  fail "UV_BIN does not resolve to an executable uv path"
+validate_root_owned_nonwritable_path "$resolved_uv"
+uv_bin="$resolved_uv"
 [[ "$python_bin" == /* && -f "$python_bin" && -x "$python_bin" ]] ||
   fail "PYTHON_BIN must name an absolute executable Python path"
 resolved_python="$(readlink -f -- "$python_bin")"
@@ -212,15 +222,15 @@ else
   constraints_file="$(mktemp)"
   install -d -o root -g root -m 0755 "$release_dir"
   release_created=true
-  "$uv_bin" export \
+  uv_command export \
     --project "$source_dir" \
     --locked \
     --no-dev \
     --no-emit-project \
     --format requirements.txt \
     --output-file "$constraints_file" >/dev/null
-  "$uv_bin" venv --python "$python_bin" "$release_dir/venv"
-  "$uv_bin" pip install \
+  uv_command venv --python "$python_bin" "$release_dir/venv"
+  uv_command pip install \
     --python "$release_dir/venv/bin/python" \
     --link-mode copy \
     --constraints "$constraints_file" \
@@ -238,6 +248,11 @@ release_violation="$(
 )"
 [[ -z "$release_violation" ]] || fail "release is not immutable: $release_violation"
 validate_release_symlinks
+entrypoint_shebang=""
+IFS= read -r entrypoint_shebang <"$release_executable" ||
+  fail "installed gateway entrypoint has no interpreter declaration"
+[[ "$entrypoint_shebang" == "#!$release_python" ]] ||
+  fail "installed gateway entrypoint does not use the release interpreter"
 runuser --user "$service_identity" -- \
   env -i PATH=/usr/bin:/bin "$python_bin" -I -c \
   'import os

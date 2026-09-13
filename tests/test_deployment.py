@@ -55,11 +55,18 @@ def test_systemd_installer_activates_only_complete_clean_revision() -> None:
     assert "status --porcelain --untracked-files=all" in installer
     assert "rev-parse --verify 'HEAD^{commit}'" in installer
     assert 'release_root="$install_root/releases"' in installer
-    assert '"$uv_bin" export' in installer
+    assert 'export PATH="/usr/sbin:/usr/bin:/sbin:/bin"' in installer
+    assert 'resolved_uv="$(readlink -f -- "$uv_bin")"' in installer
+    assert 'validate_root_owned_nonwritable_path "$resolved_uv"' in installer
+    assert "uv_command()" in installer
+    assert 'env -i HOME=/root PATH="$PATH" "$uv_bin" --no-config "$@"' in installer
+    assert "uv_command export" in installer
+    assert "uv_command venv" in installer
+    assert "uv_command pip install" in installer
     assert "--locked" in installer
     assert "--no-dev" in installer
     assert 'install -d -o root -g root -m 0755 "$release_dir"' in installer
-    assert '"$uv_bin" venv --python "$python_bin" "$release_dir/venv"' in installer
+    assert 'uv_command venv --python "$python_bin" "$release_dir/venv"' in installer
     assert '--python "$release_dir/venv/bin/python"' in installer
     assert "--link-mode copy" in installer
     assert '--build-constraints "$build_constraints_file"' in installer
@@ -119,6 +126,7 @@ def test_systemd_installer_rejects_incompatible_identity_or_python() -> None:
     assert 'env -i PATH=/usr/bin:/bin "$release_python" -I -c' in installer
     assert "local_inference_gateway.__file__" in installer
     assert "Path(sys.prefix).resolve()" in installer
+    assert 'entrypoint_shebang" == "#!$release_python"' in installer
 
 
 def test_systemd_installer_builds_only_from_captured_revision() -> None:
