@@ -82,12 +82,42 @@ Verification plan:
 
 ### Implementation summary
 
-NOT DONE.
+- Added the Invoice Processor credential and `invoice.extract.batch@1` to the existing operational
+  proof without changing gateway runtime behavior.
+- Replaced the partial hand-written denial list with the complete complement of each credential's
+  declared grants across the four-task catalog.
+- Updated exact credential-scoped health expectations and required three distinct token files.
+- Updated the runbook commands and claims to the three-credential, four-task proof.
+- Exercised the proof through a real temporary loopback HTTPS gateway backed by the installed
+  `qwen3-30b-a3b:latest` Ollama model using synthetic text only.
+- Exercised merged Invoice Processor commit `6007096` with a generated synthetic PDF through that
+  gateway; its private JSON output validated as `InvoiceRecord`, and the gateway ledger showed its
+  result acknowledged with ciphertext cleared.
 
 ### Cold diff audit
 
-NOT DONE.
+- `scripts/prove_operational_gateway.py` adds one required private token, one synthetic invoice task,
+  one exact health expectation, one successful lifecycle, and the generated cross-scope denial
+  complement. It does not alter the gateway server or worker.
+- `tests/test_operational_proof.py` adds the third fixture credential, exact invoice health/grant
+  behavior, all eight forbidden credential/task pairs, duplicate-token rejection, and output
+  redaction while preserving the document restart path.
+- `README.md` passes the invoice token to normal and restart proof commands and now describes the
+  implemented four-task proof.
+- Untraced or forbidden changes: none.
 
 ### Gap audit
 
-NOT DONE.
+DONE for the Invoice Processor operational gateway proof.
+
+- Focused proof tests: 16 passed.
+- Full local suite: 155 passed and 1 intentionally skipped live marker.
+- Ruff lint and format, mypy over 7 source files, source distribution, wheel build, and diff
+  whitespace passed.
+- Live proof: health available; all eight forbidden pairs refused; all four tasks completed, replayed,
+  and acknowledged through loopback HTTPS against Ollama.
+- Merged-client proof: generated synthetic invoice output was schema-valid and owner-private; the
+  gateway ledger contained two acknowledged `invoice.extract.batch` requests with both retained
+  results cleared (one proof-tool request and one real Invoice Processor request).
+- Model quality promotion, permanent appliance deployment, application-default cutover, customer
+  data, Windows, and signing remain deferred exactly as contracted.

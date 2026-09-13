@@ -22,6 +22,7 @@ TASKS = {
     "email.analyze": (0.1, "classification", "synthetic"),
     "email.schedule.extract": (0.1, "intent", "none"),
     "document.summary.step": (0.0, "summary", "synthetic"),
+    "invoice.extract.batch": (0.0, "invoice_status", "synthetic"),
 }
 
 
@@ -122,12 +123,14 @@ class Proof:
         ca_file: Path,
         email_token_file: Path,
         document_token_file: Path,
+        invoice_token_file: Path,
         *,
         transport: httpx.BaseTransport | None = None,
     ):
         self.email_token = _token(email_token_file)
         self.document_token = _token(document_token_file)
-        if self.email_token == self.document_token:
+        self.invoice_token = _token(invoice_token_file)
+        if len({self.email_token, self.document_token, self.invoice_token}) != 3:
             raise ProofError("application credentials must be distinct")
         self.client = httpx.Client(
             base_url=_origin(base_url),
@@ -177,6 +180,17 @@ class Proof:
                 [
                     {
                         "id": "document.summary.step",
+                        "version": 1,
+                        "status": task_status,
+                        "diagnostic_code": diagnostic_code,
+                    }
+                ],
+            ),
+            (
+                self.invoice_token,
+                [
+                    {
+                        "id": "invoice.extract.batch",
                         "version": 1,
                         "status": task_status,
                         "diagnostic_code": diagnostic_code,
@@ -251,15 +265,16 @@ class Proof:
 
     def run(self) -> None:
         self.health()
-        requests = (
-            (self.email_token, "email.analyze"),
-            (self.email_token, "email.schedule.extract"),
-            (self.document_token, "document.summary.step"),
+        grants = (
+            (self.email_token, {"email.analyze", "email.schedule.extract"}),
+            (self.document_token, {"document.summary.step"}),
+            (self.invoice_token, {"invoice.extract.batch"}),
         )
-        forbidden = (
-            (self.email_token, "document.summary.step"),
-            (self.document_token, "email.analyze"),
-            (self.document_token, "email.schedule.extract"),
+        requests = tuple(
+            (token, task) for token, allowed in grants for task in TASKS if task in allowed
+        )
+        forbidden = tuple(
+            (token, task) for token, allowed in grants for task in TASKS if task not in allowed
         )
         for token, task in forbidden:
             request = _request(task)
@@ -316,6 +331,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--ca-file", required=True, type=Path)
     parser.add_argument("--email-token-file", required=True, type=Path)
     parser.add_argument("--document-token-file", required=True, type=Path)
+    parser.add_argument("--invoice-token-file", required=True, type=Path)
     parser.add_argument("--restart-state-file", type=Path)
     arguments = parser.parse_args(argv)
     if arguments.phase != "run" and arguments.restart_state_file is None:
@@ -325,6 +341,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         arguments.ca_file,
         arguments.email_token_file,
         arguments.document_token_file,
+        arguments.invoice_token_file,
     )
     try:
         if arguments.phase == "run":

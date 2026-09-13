@@ -197,9 +197,8 @@ uv run pytest -q -m live tests/test_live_ollama.py
 
 ### Operational HTTPS proof
 
-After configuring a loopback HTTPS gateway with the Email Watcher and Document Summarizer
-credentials shown above, run the existing three-task network proof with synthetic content only.
-Invoice Processor application acceptance is a separate client slice.
+After configuring a loopback HTTPS gateway with the Email Watcher, Document Summarizer, and Invoice
+Processor credentials shown above, run the four-task network proof with synthetic content only.
 
 ```bash
 install -d -m 700 /private/path/https-proof
@@ -220,10 +219,11 @@ uv run python scripts/prove_operational_gateway.py run \
   --base-url https://127.0.0.1:8787 \
   --ca-file /private/path/https-proof/gateway-ca.pem \
   --email-token-file /private/path/email-watcher.token \
-  --document-token-file /private/path/document-summarizer.token
+  --document-token-file /private/path/document-summarizer.token \
+  --invoice-token-file /private/path/invoice-processor.token
 ```
 
-The command verifies credential-scoped health, forbidden cross-credential task use, all three
+The command verifies credential-scoped health, every forbidden cross-credential task pair, all four
 current task policies, exact replay, and acknowledgement. It prints statuses, request identities,
 and elapsed times; it never prints credentials, prompts, or generated content.
 
@@ -237,6 +237,7 @@ uv run python scripts/prove_operational_gateway.py prepare-restart \
   --ca-file /private/path/https-proof/gateway-ca.pem \
   --email-token-file /private/path/email-watcher.token \
   --document-token-file /private/path/document-summarizer.token \
+  --invoice-token-file /private/path/invoice-processor.token \
   --restart-state-file "$proof_restart_dir/request.json"
 
 # Stop the gateway. Restart it against the same database and encryption key, but point
@@ -250,6 +251,7 @@ uv run python scripts/prove_operational_gateway.py reconcile-restart \
   --ca-file /private/path/https-proof/gateway-ca.pem \
   --email-token-file /private/path/email-watcher.token \
   --document-token-file /private/path/document-summarizer.token \
+  --invoice-token-file /private/path/invoice-processor.token \
   --restart-state-file "$proof_restart_dir/request.json"
 ```
 
