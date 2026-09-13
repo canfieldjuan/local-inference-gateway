@@ -189,11 +189,54 @@ The certificate must be a regular file that is not group/world-writable. The pri
 regular owner-private file. Symlinked TLS inputs are rejected on the Linux appliance. The gateway
 does not generate certificates, install trust roots, or change firewall rules.
 
-The example unit at `deploy/systemd/local-inference-gateway.service` encodes the supported topology:
+The unit at `deploy/systemd/local-inference-gateway.service` encodes the supported topology:
 one unprivileged service user, one gateway process, a protected state directory, and configuration
 under `/etc/local-inference-gateway`. Install the package into the unit's dedicated virtual
 environment and keep the database, credential file, and result key under paths readable only by the
 service account. Do not add Uvicorn workers or start a second unit against the same SQLite file.
+
+### Install the system service snapshot
+
+Run the installer only from the clean revision intended for the appliance. It requires root but
+accepts no credentials or secret values. If `uv` is outside root's PATH, pass its absolute executable
+path explicitly:
+
+```bash
+sudo env UV_BIN="$(command -v uv)" ./deploy/systemd/install.sh
+```
+
+The installer creates the dedicated system identity and empty private directories, installs locked
+production dependencies under `/opt/local-inference-gateway/releases/<full-commit>`, atomically
+points `/opt/local-inference-gateway/venv` at that complete release, installs the reviewed unit, and
+reloads systemd. It deliberately does not create secrets, enable the unit, or start it. Prior
+releases remain available for operator-directed recovery; the installer never prunes them.
+
+Provision `/etc/local-inference-gateway/gateway.env` and every file it references outside Git. The
+environment file contains paths and non-secret runtime settings, never bearer-token values:
+
+```text
+GATEWAY_DATABASE_FILE=/var/lib/local-inference-gateway/gateway.sqlite3
+GATEWAY_CREDENTIALS_FILE=/etc/local-inference-gateway/credentials.json
+GATEWAY_ENCRYPTION_KEY_FILE=/etc/local-inference-gateway/result.key
+GATEWAY_OLLAMA_URL=http://127.0.0.1:11434
+GATEWAY_OLLAMA_MODEL=qwen3-30b-a3b:latest
+GATEWAY_DEPLOYMENT_ID=appliance-host
+GATEWAY_BIND_HOST=127.0.0.1
+GATEWAY_BIND_PORT=8787
+```
+
+Use mode `0600` for the environment file and every token, key, or credential file. Files the
+gateway opens must be readable by `local-inference-gateway`; TLS public certificates may be `0644`
+but must not be group/world-writable. Add the optional LM Studio and private-LAN variables documented
+above only after their referenced files and trust boundary are ready.
+
+Then activate and inspect the service explicitly:
+
+```bash
+sudo systemctl enable --now local-inference-gateway.service
+sudo systemctl status local-inference-gateway.service --no-pager
+sudo journalctl -u local-inference-gateway.service --since today --no-pager
+```
 
 After the operator installs the unit and its private configuration, inspect it without exposing
 credentials:

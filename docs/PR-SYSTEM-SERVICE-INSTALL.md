@@ -77,12 +77,44 @@ Verification plan:
 
 ### Implementation summary
 
-NOT DONE.
+- `deploy/systemd/install.sh` now installs a clean, locked Git revision into a root-owned,
+  commit-addressed release, rejects incomplete or mismatched existing releases, flips the active
+  virtual-environment symlink only after executable validation, installs the existing unit, and
+  performs only `daemon-reload`.
+- `tests/test_deployment.py` now exercises shell syntax and non-root rejection and asserts the clean
+  revision, immutable-release, identity-marker, atomic-activation, no-secret, and no-service-action
+  boundaries while retaining the existing unit checks.
+- `README.md` now documents the exact install, private provisioning, explicit activation, status,
+  and log sequence, including the host-required absolute `UV_BIN` override.
+- Gateway runtime, APIs, task schemas, routing, credentials, applications, and worker processes are
+  intentionally unchanged.
 
 ### Cold diff audit
 
-NOT DONE.
+- `deploy/systemd/install.sh:4-44` defines fixed system paths and fail-closed admission for root,
+  prerequisites, an absolute executable `uv`, a Git checkout, and a clean worktree. This satisfies
+  contract items 1 and 2 and is covered by `tests/test_deployment.py:29-46,49-74` plus `bash -n`.
+- `deploy/systemd/install.sh:46-104` derives the full commit identity, rejects symlinked/incomplete
+  or identity-mismatched releases, installs locked production dependencies at their final path,
+  removes only a newly created incomplete release on failure, and atomically replaces the active
+  symlink after validation. This satisfies contract items 3 and 4 and is covered by
+  `tests/test_deployment.py:49-74`.
+- `deploy/systemd/install.sh:106-112` installs the reviewed unit and reloads systemd without any
+  service lifecycle action or secret provisioning. This satisfies contract item 5 and is covered by
+  `tests/test_deployment.py:77-88` and the preserved unit assertions at lines 13-26.
+- `README.md:192-252` separates package installation, operator-owned private provisioning, explicit
+  activation, and inspection. This satisfies contract item 6.
+- Verification on the final implementation reported `4 passed, 2 warnings` for the focused
+  deployment tests, `199 passed, 1 skipped, 2 warnings` for full pytest, `All checks passed!` for
+  Ruff lint, `31 files already formatted`, no mypy issues in 7 source files, 39 locked packages,
+  both wheel and source distribution built, valid Bash syntax, and a clean whitespace diff.
+- No untraced runtime, dependency, schema, routing, model, credential, application, or service-state
+  change appears in the diff.
 
 ### Gap audit
 
-NOT DONE.
+DONE.
+
+The after-merge root installation and stopped-service inspection remain deployment evidence, not a
+gap in the reviewable installer implementation. Private provisioning and service activation remain
+the next explicitly separate vertical.
