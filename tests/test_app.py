@@ -606,6 +606,35 @@ def test_expiry_boundaries_fail_before_dispatch(gateway) -> None:  # type: ignor
     assert gateway.worker.calls == 0
 
 
+def test_fractional_clock_accepts_only_the_normalized_maximum_expiry(gateway) -> None:  # type: ignore[no-untyped-def]
+    gateway.clock.value = gateway.clock().replace(microsecond=250_000)
+    unrounded_maximum = gateway.clock() + timedelta(
+        seconds=gateway.settings.request_max_lifetime_seconds
+    )
+    normalized_maximum = unrounded_maximum.replace(microsecond=0) + timedelta(seconds=1)
+    at_maximum = gateway.request(
+        request_id="42345678-1234-4234-8234-123456789abc",
+        request_expires_at=normalized_maximum.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    )
+    beyond_maximum = gateway.request(
+        request_id="52345678-1234-4234-8234-123456789abc",
+        request_expires_at=(normalized_maximum + timedelta(seconds=1)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        ),
+    )
+
+    accepted = gateway.client.post("/v1/inference", headers=gateway.headers, json=at_maximum)
+    rejected = gateway.client.post("/v1/inference", headers=gateway.headers, json=beyond_maximum)
+
+    assert accepted.status_code == 200
+    assert rejected.status_code == 422
+    assert rejected.json()["error"] == {
+        "code": "invalid_request",
+        "retryable": False,
+    }
+    assert gateway.worker.calls == 1
+
+
 def test_expiry_is_rechecked_after_durable_transition(gateway, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     mark_in_progress = gateway.store.mark_in_progress
 

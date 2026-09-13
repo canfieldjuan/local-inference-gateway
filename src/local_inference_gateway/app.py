@@ -6,7 +6,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 
 from fastapi import FastAPI, Request
@@ -262,10 +262,12 @@ class GatewayService:
         policy = TASK_POLICIES.get(task)
         if policy is None:
             raise GatewayFailure("unsupported_task", False, 422)
-        lifetime = (request.expires_at - now).total_seconds()
-        if lifetime <= 0:
+        if request.expires_at <= now:
             raise GatewayFailure("request_expired", False, 409)
-        if lifetime > self.settings.request_max_lifetime_seconds:
+        maximum_expiry = now + timedelta(seconds=self.settings.request_max_lifetime_seconds)
+        if maximum_expiry.microsecond:
+            maximum_expiry = maximum_expiry.replace(microsecond=0) + timedelta(seconds=1)
+        if request.expires_at > maximum_expiry:
             raise GatewayFailure("invalid_request", False, 422)
         if request.generation.temperature != policy.temperature:
             raise GatewayFailure("unsupported_task", False, 422)
