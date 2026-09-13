@@ -55,6 +55,8 @@ def test_systemd_installer_activates_only_complete_clean_revision() -> None:
 
     assert "status --porcelain --untracked-files=all" in installer
     assert "rev-parse --verify 'HEAD^{commit}'" in installer
+    assert installer.count('git --no-optional-locks -C "$repo_dir"') == 4
+    assert 'git -C "$repo_dir"' not in installer
     assert 'release_root="$install_root/releases"' in installer
     assert 'export PATH="/usr/sbin:/usr/bin:/sbin:/bin"' in installer
     assert 'resolved_uv="$(readlink -f -- "$uv_bin")"' in installer
@@ -172,7 +174,10 @@ def test_systemd_installer_builds_only_from_captured_revision() -> None:
     installer = (ROOT / "deploy" / "systemd" / "install.sh").read_text(encoding="utf-8")
 
     assert 'source_dir="$(mktemp -d)"' in installer
-    assert 'git -C "$repo_dir" archive "$source_revision" | tar -x -C "$source_dir"' in installer
+    assert (
+        'git --no-optional-locks -C "$repo_dir" archive "$source_revision" '
+        '| tar -x -C "$source_dir"' in installer
+    )
     assert '--project "$source_dir"' in installer
     assert '"$source_dir"\n' in installer
     assert '"$source_dir/deploy/systemd/local-inference-gateway.service"' in installer
