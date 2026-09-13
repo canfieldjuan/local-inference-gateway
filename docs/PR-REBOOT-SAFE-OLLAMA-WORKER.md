@@ -99,7 +99,8 @@ Verification plan:
   user-service hardening trace directly to acceptance criteria 1 through 3.
 - `deploy/systemd/install-ollama-user.sh` installs only non-secret user configuration after all
   executable, identity, mount, containment, checkout, and managed-path checks. Atomic replacements
-  and `daemon-reload` trace to acceptance criteria 4 and 5; no service lifecycle command exists.
+  and `daemon-reload` trace to acceptance criteria 4 and 5; an unreadable Git status fails closed,
+  and no service lifecycle command exists.
 - `tests/test_deployment.py` covers unit ordering/privacy/retry declarations, installer syntax and
   admission controls, fixed environment values, atomic targets, and lifecycle/mount non-mutation.
 - `README.md` documents installation, explicit activation, loopback inspection, and the separate

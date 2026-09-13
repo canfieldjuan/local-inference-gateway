@@ -284,9 +284,11 @@ def test_ollama_user_installer_validates_storage_and_never_activates() -> None:
     assert '[[ ! -L "$managed_directory" ]]' in installer
     assert '[[ ! -L "$managed_target" ]]' in installer
     assert (
-        'git --no-optional-locks -C "$repo_dir" status --porcelain --untracked-files=all'
-        in installer
+        'checkout_status="$(git --no-optional-locks -C "$repo_dir" status '
+        '--porcelain --untracked-files=all)" ||' in installer
     )
+    assert 'fail "cannot determine checkout cleanliness"' in installer
+    assert '[[ -z "$checkout_status" ]] || fail "refusing to install a dirty checkout"' in installer
     assert "OLLAMA_HOST=127.0.0.1:11434" in installer
     assert "OLLAMA_NO_CLOUD=1" in installer
     assert "OLLAMA_CONTEXT_LENGTH=8192" in installer

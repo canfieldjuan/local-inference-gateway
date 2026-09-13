@@ -115,8 +115,9 @@ esac
 
 git --no-optional-locks -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
   fail "installer must run from a Git checkout"
-[[ -z "$(git --no-optional-locks -C "$repo_dir" status --porcelain --untracked-files=all)" ]] ||
-  fail "refusing to install a dirty checkout"
+checkout_status="$(git --no-optional-locks -C "$repo_dir" status --porcelain --untracked-files=all)" ||
+  fail "cannot determine checkout cleanliness"
+[[ -z "$checkout_status" ]] || fail "refusing to install a dirty checkout"
 [[ -f "$unit_source" && ! -L "$unit_source" ]] || fail "reviewed user unit is missing"
 
 config_dir="$home_dir/.config/local-inference-gateway"
