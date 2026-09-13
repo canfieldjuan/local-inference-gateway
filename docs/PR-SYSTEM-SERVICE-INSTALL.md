@@ -65,10 +65,11 @@ Verification plan:
 
 ### Acceptance criteria
 
-1. A non-root caller, dirty tracked checkout, missing prerequisite, non-local, default-NSS-mismatched,
-   or supplementary-group service identity, `uv` or Python outside a root-owned non-writable path,
-   inaccessible Python, or regular file/directory at the activation path is rejected before changing
-   the active release.
+1. A non-root caller, dirty tracked checkout, missing prerequisite, non-local, numerically aliased,
+   default-NSS-mismatched, or supplementary-group service identity, `uv` or Python outside a
+   root-owned non-writable path, inaccessible Python, Python with an unsafe lexical/canonical runtime
+   path or a runtime path hidden by the unit sandbox, or regular file/directory at the activation path
+   is rejected before changing the active release.
 2. The installed release path contains the full source commit identity and is populated completely
    before the active symlink changes.
 3. A rerun for the same clean commit is idempotent and reuses only an interpreter whose isolated
@@ -86,10 +87,13 @@ Verification plan:
 
 ### Implementation summary
 
-- `deploy/systemd/install.sh` now requires a local-files-only dedicated identity selected identically
-  by default NSS with no supplementary groups and a service-readable interpreter whose full canonical
-  path is root-owned and non-writable, requires the same trust boundary for `uv`, captures the selected
-  commit into a root-owned snapshot, installs that snapshot with locked runtime and build dependencies
+- `deploy/systemd/install.sh` now requires a numerically unique local-files-only dedicated identity
+  selected identically by default NSS with no supplementary groups and a service-readable interpreter
+  whose full canonical path is root-owned and non-writable. It inspects that interpreter first through
+  a capability-free unprivileged identity, rejects unsafe lexical or canonical runtime paths and paths
+  hidden by the unit's `ProtectHome` boundary, and only then executes it as the service identity. It
+  requires the same trust boundary for `uv`, captures the selected commit into a root-owned snapshot,
+  installs that snapshot with locked runtime and build dependencies
   copied under an empty environment with configuration discovery disabled into a root-owned,
   service-readable commit-addressed release, rejects incomplete, mismatched, mutable, or externally
   redirected releases including every unsafe symlink traversal and target, rejects redirected managed
@@ -113,9 +117,11 @@ Verification plan:
   prerequisites, root-owned non-writable absolute executable `uv`/Python paths, a Git checkout, and a
   clean worktree; its `uv` wrapper clears ambient settings and disables configuration discovery; it
   creates or validates the local-files-only non-login system identity against the host's regular
-  UID/GID boundary, verifies default NSS selects the same account and group, rejects supplementary
-  group membership, and proves that identity can execute Python only after every canonical interpreter
-  path component and every isolated base-runtime import path are root-owned and non-writable;
+  UID/GID boundary, rejects local numeric aliases, verifies default NSS selects the same account and
+  group, rejects supplementary group membership, inspects Python's isolated runtime paths through an
+  unprivileged capability-free identity, rejects runtime paths whose lexical/canonical components are
+  not root-owned and non-writable or are hidden by the unit sandbox, and proves the service identity can
+  execute Python only after those checks;
   it also rejects symlinked/non-directory private paths before changing their ownership and takes a
   host-wide nonblocking installer lock. This satisfies contract items 1 and 2 and is covered by
   `tests/test_deployment.py` plus `bash -n`.
@@ -137,7 +143,7 @@ Verification plan:
 - `deploy/systemd/install.sh` installs the reviewed unit and reloads systemd without any service
   lifecycle action or secret provisioning. This satisfies contract item 5 and is covered by
   `tests/test_deployment.py` and the preserved unit assertions.
-- `README.md:192-252` separates package installation, operator-owned private provisioning, explicit
+- `README.md:192-254` separates package installation, operator-owned private provisioning, explicit
   activation, and inspection. This satisfies contract item 6.
 - Verification on the final implementation reported `7 passed, 2 warnings` for the focused
   deployment tests, `202 passed, 1 skipped, 2 warnings` for full pytest, `All checks passed!` for

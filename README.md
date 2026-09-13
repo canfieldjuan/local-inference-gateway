@@ -202,7 +202,9 @@ accepts no credentials or secret values. The selected `uv` executable and its co
 must be root-owned and non-writable by group or other; stage a trusted user installation into a
 root-controlled path before invoking the installer. The default service-readable interpreter is
 `/usr/bin/python3`; set `PYTHON_BIN` to another absolute Python 3.12+ path under `/usr`, `/opt`, or
-`/bin` only when the service identity can execute it inside the unit sandbox:
+`/bin` only when an unprivileged inspection identity and the service identity can execute it. Its
+isolated runtime paths must also remain outside `/home`, `/root`, and `/run/user`, which the unit's
+`ProtectHome=true` sandbox hides:
 
 ```bash
 sudo install -o root -g root -m 0755 "$(command -v uv)" /usr/local/bin/uv

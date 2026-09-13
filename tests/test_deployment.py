@@ -115,9 +115,14 @@ def test_systemd_installer_rejects_incompatible_identity_or_python() -> None:
     assert 'default_group_gid" == "$service_group_gid"' in installer
     assert 'default_service_uid" == "$service_uid"' in installer
     assert 'id -G "$service_identity"' in installer
-    assert 'runuser --user "$service_identity" -- "$python_bin"' in installer
+    assert 'passwd_alias="$(getent --service=files passwd | awk -F:' in installer
+    assert 'group_alias="$(getent --service=files group | awk -F:' in installer
+    assert "setpriv --reuid 65534 --regid 65534 --clear-groups" in installer
     assert 'print("\\n".join(sys.path))' in installer
+    assert 'validate_unit_visible_path "$python_runtime_path"' in installer
+    assert 'validate_root_owned_nonwritable_path "$python_runtime_path"' in installer
     assert 'validate_root_owned_nonwritable_path "$trusted_runtime_path"' in installer
+    assert 'runuser --user "$service_identity" --' in installer
     assert "os.access(sys.argv[1], os.X_OK)" in installer
     assert '"$release_executable"' in installer
     assert 'resolved_python="$(readlink -f -- "$python_bin")"' in installer
@@ -132,6 +137,12 @@ def test_systemd_installer_rejects_incompatible_identity_or_python() -> None:
     assert "callable(gateway_main.main)" in installer
     assert 'runpy.run_path(sys.argv[1], run_name="__main__")' in installer
     assert 'entrypoint_shebang" == "#!$release_python"' in installer
+    assert installer.index("setpriv --reuid 65534 --regid 65534 --clear-groups") < (
+        installer.index('validate_root_owned_nonwritable_path "$python_runtime_path"')
+    )
+    assert installer.index('validate_root_owned_nonwritable_path "$trusted_runtime_path"') < (
+        installer.index('runuser --user "$service_identity" --')
+    )
 
 
 def test_systemd_installer_builds_only_from_captured_revision() -> None:

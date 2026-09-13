@@ -67,6 +67,16 @@ validate_root_owned_nonwritable_path() {
   done
 }
 
+validate_unit_visible_path() {
+  local candidate_path="$1"
+
+  case "$candidate_path" in
+    /home | /home/* | /root | /root/* | /run/user | /run/user/*)
+      fail "selected Python runtime path is hidden by the unit sandbox: $candidate_path"
+      ;;
+  esac
+}
+
 validate_release_symlinks() {
   local release_link release_link_path release_link_target resolved_release_link
 
@@ -95,7 +105,7 @@ validate_release_symlinks() {
 
 [[ "${EUID:-$(id -u)}" -eq 0 ]] || fail "run this installer as root"
 for command_name in \
-  awk chmod env find flock git getent groupadd id install ln mktemp mv readlink rm runuser stat \
+  awk chmod env find flock git getent groupadd id install ln mktemp mv readlink rm runuser setpriv stat \
   systemctl tar useradd; do
   command -v "$command_name" >/dev/null 2>&1 || fail "$command_name is required"
 done
@@ -188,6 +198,14 @@ IFS=: read -r service_name _ service_uid service_gid _ service_home service_shel
 [[ "$service_gid" == "$service_group_gid" ]] || fail "service account primary group is incompatible"
 [[ "$service_home" == "$state_dir" ]] || fail "service account home is incompatible"
 [[ "$service_shell" == "$nologin_shell" ]] || fail "service account shell is incompatible"
+passwd_alias="$(getent --service=files passwd | awk -F: \
+  -v expected_name="$service_identity" -v expected_id="$service_uid" \
+  '$3 == expected_id && $1 != expected_name { print $1; exit }')"
+[[ -z "$passwd_alias" ]] || fail "service UID is also assigned to local account: $passwd_alias"
+group_alias="$(getent --service=files group | awk -F: \
+  -v expected_name="$service_identity" -v expected_id="$service_group_gid" \
+  '$3 == expected_id && $1 != expected_name { print $1; exit }')"
+[[ -z "$group_alias" ]] || fail "service GID is also assigned to local group: $group_alias"
 
 default_group_record="$(getent group "$service_identity")"
 IFS=: read -r default_group_name _ default_group_gid _ <<<"$default_group_record"
@@ -203,26 +221,35 @@ IFS=: read -r default_service_name _ default_service_uid default_service_gid _ \
   fail "default NSS does not select the local service account"
 [[ "$(id -G "$service_identity")" == "$service_group_gid" ]] ||
   fail "service account has supplementary group memberships"
-runuser --user "$service_identity" -- "$python_bin" -c \
-  'import sys; raise SystemExit(sys.version_info < (3, 12))' >/dev/null 2>&1 ||
-  fail "service account cannot execute the selected Python 3.12+ interpreter"
 python_runtime_paths="$(
-  runuser --user "$service_identity" -- \
-    env -i PATH=/usr/bin:/bin "$python_bin" -I -S -c \
-    'import sys; print("\n".join(sys.path))'
-)" || fail "cannot inspect the selected Python runtime paths"
+  setpriv --reuid 65534 --regid 65534 --clear-groups \
+    --inh-caps=-all --ambient-caps=-all --bounding-set=-all --no-new-privs \
+    env -i HOME=/nonexistent PATH=/usr/bin:/bin "$python_bin" -I -S -c \
+    'import sys
+
+raise SystemExit(2) if sys.version_info < (3, 12) else print("\n".join(sys.path))'
+)" || fail "cannot safely inspect the selected Python 3.12+ runtime"
 [[ -n "$python_runtime_paths" ]] || fail "selected Python runtime has no import paths"
 while IFS= read -r python_runtime_path; do
   [[ "$python_runtime_path" == /* ]] || fail "selected Python runtime path is not absolute"
+  validate_unit_visible_path "$python_runtime_path"
   if [[ -e "$python_runtime_path" ]]; then
+    validate_root_owned_nonwritable_path "$python_runtime_path"
     trusted_runtime_path="$(readlink -f -- "$python_runtime_path")" ||
       fail "cannot resolve selected Python runtime path: $python_runtime_path"
   else
-    trusted_runtime_path="$(readlink -f -- "${python_runtime_path%/*}")" ||
+    python_runtime_parent="${python_runtime_path%/*}"
+    validate_root_owned_nonwritable_path "$python_runtime_parent"
+    trusted_runtime_path="$(readlink -f -- "$python_runtime_parent")" ||
       fail "cannot resolve selected Python runtime parent: $python_runtime_path"
   fi
+  validate_unit_visible_path "$trusted_runtime_path"
   validate_root_owned_nonwritable_path "$trusted_runtime_path"
 done <<<"$python_runtime_paths"
+runuser --user "$service_identity" -- \
+  env -i HOME="$service_home" PATH=/usr/bin:/bin "$python_bin" -I -S -c \
+  'import sys; raise SystemExit(sys.version_info < (3, 12))' >/dev/null 2>&1 ||
+  fail "service account cannot execute the selected Python 3.12+ interpreter"
 
 install -d -o root -g root -m 0755 "$install_root" "$release_root"
 install -d -o root -g "$service_identity" -m 0750 "$config_dir"
