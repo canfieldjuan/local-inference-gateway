@@ -19,7 +19,7 @@ def load_module():  # type: ignore[no-untyped-def]
 
 
 @pytest.fixture
-def files(tmp_path: Path) -> tuple[Path, Path, Path]:
+def files(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
     ca = tmp_path / "ca.pem"
     ca.write_text("test transport does not load this CA", encoding="ascii")
     email = tmp_path / "email.token"
@@ -28,7 +28,10 @@ def files(tmp_path: Path) -> tuple[Path, Path, Path]:
     document = tmp_path / "document.token"
     document.write_text("d" * 32, encoding="ascii")
     document.chmod(0o600)
-    return ca, email, document
+    invoice = tmp_path / "invoice.token"
+    invoice.write_text("i" * 32, encoding="ascii")
+    invoice.chmod(0o600)
+    return ca, email, document, invoice
 
 
 class Fixture:
@@ -57,8 +60,8 @@ class Fixture:
         if request.url.path == "/v1/health":
             status = "available" if self.worker_available else "unavailable"
             diagnostic_code = "ready" if self.worker_available else "worker_unavailable"
-            tasks = (
-                [
+            tasks = {
+                "e" * 32: [
                     {
                         "id": "email.analyze",
                         "version": 1,
@@ -71,17 +74,24 @@ class Fixture:
                         "status": status,
                         "diagnostic_code": diagnostic_code,
                     },
-                ]
-                if token == "e" * 32
-                else [
+                ],
+                "d" * 32: [
                     {
                         "id": "document.summary.step",
                         "version": 1,
                         "status": status,
                         "diagnostic_code": diagnostic_code,
                     }
-                ]
-            )
+                ],
+                "i" * 32: [
+                    {
+                        "id": "invoice.extract.batch",
+                        "version": 1,
+                        "status": status,
+                        "diagnostic_code": diagnostic_code,
+                    }
+                ],
+            }.get(token, [])
             if self.extra_health_task is not None:
                 tasks.append(self.extra_health_task)
             for task in tasks:
@@ -97,6 +107,7 @@ class Fixture:
             authorized = {
                 "e" * 32: {"email.analyze", "email.schedule.extract"},
                 "d" * 32: {"document.summary.step"},
+                "i" * 32: {"invoice.extract.batch"},
             }
             if task not in authorized.get(token, set()):
                 self.forbidden_submissions.append((token, task))
@@ -177,7 +188,7 @@ def proof(module, files, fixture):  # type: ignore[no-untyped-def]
 
 
 def test_full_proof_scopes_replays_acknowledges_and_redacts(
-    files: tuple[Path, Path, Path], capsys: pytest.CaptureFixture[str]
+    files: tuple[Path, Path, Path, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:
     module = load_module()
     fixture = Fixture()
@@ -190,15 +201,22 @@ def test_full_proof_scopes_replays_acknowledges_and_redacts(
     assert {item["task"]["id"] for item in fixture.submissions} == set(module.TASKS)
     assert set(fixture.forbidden_submissions) == {
         ("e" * 32, "document.summary.step"),
+        ("e" * 32, "invoice.extract.batch"),
         ("d" * 32, "email.analyze"),
         ("d" * 32, "email.schedule.extract"),
+        ("d" * 32, "invoice.extract.batch"),
+        ("i" * 32, "email.analyze"),
+        ("i" * 32, "email.schedule.extract"),
+        ("i" * 32, "document.summary.step"),
     }
     assert "Synthetic operational transport proof" not in output
-    assert "e" * 32 not in output and "d" * 32 not in output
+    assert "e" * 32 not in output and "d" * 32 not in output and "i" * 32 not in output
     assert "synthetic" not in output
 
 
-def test_restart_state_reuses_one_request(files: tuple[Path, Path, Path], tmp_path: Path) -> None:
+def test_restart_state_reuses_one_request(
+    files: tuple[Path, Path, Path, Path], tmp_path: Path
+) -> None:
     module = load_module()
     fixture = Fixture()
     state = tmp_path / "private" / "request.json"
@@ -219,7 +237,7 @@ def test_restart_state_reuses_one_request(files: tuple[Path, Path, Path], tmp_pa
 
 
 def test_unavailable_worker_cannot_execute_missing_restart_state(
-    files: tuple[Path, Path, Path], capsys: pytest.CaptureFixture[str]
+    files: tuple[Path, Path, Path, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:
     module = load_module()
     fixture = Fixture()
@@ -244,19 +262,30 @@ def test_restart_request_can_use_full_supported_lifetime() -> None:
     assert expires_at >= before
 
 
-def test_proof_rejects_unsafe_endpoint_and_credential(files: tuple[Path, Path, Path]) -> None:
+def test_proof_rejects_unsafe_endpoint_and_credential(files: tuple[Path, Path, Path, Path]) -> None:
     module = load_module()
-    ca, email, document = files
+    ca, email, document, invoice = files
     with pytest.raises(module.ProofError, match="loopback HTTPS"):
-        module.Proof("http://127.0.0.1:8787", ca, email, document)
+        module.Proof("http://127.0.0.1:8787", ca, email, document, invoice)
     with pytest.raises(module.ProofError, match="loopback HTTPS"):
-        module.Proof("https://192.168.1.20:8787", ca, email, document)
+        module.Proof("https://192.168.1.20:8787", ca, email, document, invoice)
     email.chmod(0o644)
     with pytest.raises(module.ProofError, match="owner-private"):
-        module.Proof("https://127.0.0.1:8787", ca, email, document)
+        module.Proof("https://127.0.0.1:8787", ca, email, document, invoice)
 
 
-def test_health_rejects_extra_cross_scope_task(files: tuple[Path, Path, Path]) -> None:
+def test_proof_requires_three_distinct_application_credentials(
+    files: tuple[Path, Path, Path, Path],
+) -> None:
+    module = load_module()
+    ca, email, document, invoice = files
+    invoice.write_text(document.read_text(encoding="ascii"), encoding="ascii")
+
+    with pytest.raises(module.ProofError, match="credentials must be distinct"):
+        module.Proof("https://127.0.0.1:8787", ca, email, document, invoice)
+
+
+def test_health_rejects_extra_cross_scope_task(files: tuple[Path, Path, Path, Path]) -> None:
     module = load_module()
     fixture = Fixture()
     fixture.extra_health_task = {
@@ -273,7 +302,9 @@ def test_health_rejects_extra_cross_scope_task(files: tuple[Path, Path, Path]) -
 
 
 @pytest.mark.parametrize("location", ["health", "task"])
-def test_health_rejects_undeclared_metadata(location: str, files: tuple[Path, Path, Path]) -> None:
+def test_health_rejects_undeclared_metadata(
+    location: str, files: tuple[Path, Path, Path, Path]
+) -> None:
     module = load_module()
     fixture = Fixture()
     if location == "health":
@@ -290,7 +321,7 @@ def test_health_rejects_undeclared_metadata(location: str, files: tuple[Path, Pa
 
 @pytest.mark.parametrize("field", ["protocol_version", "request_id", "missing_request_id"])
 def test_completed_rejects_response_identity_mismatch(
-    field: str, files: tuple[Path, Path, Path]
+    field: str, files: tuple[Path, Path, Path, Path]
 ) -> None:
     module = load_module()
     fixture = Fixture()
@@ -308,7 +339,9 @@ def test_completed_rejects_response_identity_mismatch(
         client.close()
 
 
-def test_acknowledge_rejects_response_identity_mismatch(files: tuple[Path, Path, Path]) -> None:
+def test_acknowledge_rejects_response_identity_mismatch(
+    files: tuple[Path, Path, Path, Path],
+) -> None:
     module = load_module()
     fixture = Fixture()
     fixture.ack_request_id = "12345678-1234-4234-8234-123456789abc"
@@ -320,7 +353,9 @@ def test_acknowledge_rejects_response_identity_mismatch(files: tuple[Path, Path,
         client.close()
 
 
-def test_acknowledge_requires_result_to_be_unreplayable(files: tuple[Path, Path, Path]) -> None:
+def test_acknowledge_requires_result_to_be_unreplayable(
+    files: tuple[Path, Path, Path, Path],
+) -> None:
     module = load_module()
     fixture = Fixture()
     fixture.retain_after_ack = True
@@ -335,7 +370,7 @@ def test_acknowledge_requires_result_to_be_unreplayable(files: tuple[Path, Path,
 
 
 def test_requests_are_created_immediately_before_first_submission(
-    files: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch
+    files: tuple[Path, Path, Path, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module = load_module()
     fixture = Fixture()
@@ -357,7 +392,7 @@ def test_requests_are_created_immediately_before_first_submission(
 
 
 def test_cross_credential_denial_rejects_noncanonical_envelope(
-    files: tuple[Path, Path, Path],
+    files: tuple[Path, Path, Path, Path],
 ) -> None:
     module = load_module()
     fixture = Fixture()
