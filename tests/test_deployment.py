@@ -48,6 +48,9 @@ def test_systemd_installer_is_syntax_valid_and_refuses_non_root() -> None:
 
 def test_systemd_installer_activates_only_complete_clean_revision() -> None:
     installer = (ROOT / "deploy" / "systemd" / "install.sh").read_text(encoding="utf-8")
+    build_constraints = (ROOT / "deploy" / "systemd" / "build-constraints.txt").read_text(
+        encoding="utf-8"
+    )
 
     assert "status --porcelain --untracked-files=all" in installer
     assert "rev-parse --verify 'HEAD^{commit}'" in installer
@@ -56,8 +59,9 @@ def test_systemd_installer_activates_only_complete_clean_revision() -> None:
     assert "--locked" in installer
     assert "--no-dev" in installer
     assert 'install -d -o root -g root -m 0755 "$release_dir"' in installer
-    assert '"$uv_bin" venv "$release_dir/venv"' in installer
+    assert '"$uv_bin" venv --python "$python_bin" "$release_dir/venv"' in installer
     assert '--python "$release_dir/venv/bin/python"' in installer
+    assert '--build-constraints "$build_constraints_file"' in installer
     assert '[[ -x "$release_executable" ]]' in installer
     assert 'release_marker="$release_dir/SOURCE_REVISION"' in installer
     assert '[[ ! -L "$release_dir" ]]' in installer
@@ -72,6 +76,28 @@ def test_systemd_installer_activates_only_complete_clean_revision() -> None:
         'ln -s -- "$release_dir/venv"'
     )
     assert installer.index('if [[ -e "$active_venv"') < installer.index("install -d")
+    assert build_constraints.splitlines() == [
+        "hatchling==1.32.0",
+        "packaging==26.3",
+        "pathspec==1.1.1",
+        "pluggy==1.6.0",
+        "tomlkit==0.15.1",
+        "trove-classifiers==2026.6.1.19",
+    ]
+
+
+def test_systemd_installer_rejects_incompatible_identity_or_python() -> None:
+    installer = (ROOT / "deploy" / "systemd" / "install.sh").read_text(encoding="utf-8")
+
+    assert 'python_bin="${PYTHON_BIN:-/usr/bin/python3}"' in installer
+    assert 'regular_uid_min="$(awk \'$1 == "UID_MIN"' in installer
+    assert 'regular_gid_min="$(awk \'$1 == "GID_MIN"' in installer
+    assert 'service_uid" -gt 0 && "$service_uid" -lt "$regular_uid_min"' in installer
+    assert 'service_gid" == "$service_group_gid"' in installer
+    assert 'service_home" == "$state_dir"' in installer
+    assert 'service_shell" == "$nologin_shell"' in installer
+    assert 'runuser --user "$service_identity" -- "$python_bin"' in installer
+    assert 'runuser --user "$service_identity" -- "$release_python"' in installer
 
 
 def test_systemd_installer_neither_provisions_secrets_nor_activates_service() -> None:

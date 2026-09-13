@@ -10,6 +10,9 @@ state_dir="/var/lib/local-inference-gateway"
 unit_target="/etc/systemd/system/local-inference-gateway.service"
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 uv_bin="${UV_BIN:-$(command -v uv || true)}"
+python_bin="${PYTHON_BIN:-/usr/bin/python3}"
+build_constraints_file="$repo_dir/deploy/systemd/build-constraints.txt"
+nologin_shell="/usr/sbin/nologin"
 constraints_file=""
 temporary_link=""
 release_created=false
@@ -33,11 +36,22 @@ fail() {
 }
 
 [[ "${EUID:-$(id -u)}" -eq 0 ]] || fail "run this installer as root"
-for command_name in chmod git getent groupadd install ln mktemp mv rm systemctl useradd; do
+for command_name in awk chmod git getent groupadd install ln mktemp mv rm runuser systemctl useradd; do
   command -v "$command_name" >/dev/null 2>&1 || fail "$command_name is required"
 done
 [[ "$uv_bin" == /* && -f "$uv_bin" && -x "$uv_bin" ]] ||
   fail "UV_BIN must name an absolute executable uv path"
+[[ "$python_bin" == /* && -f "$python_bin" && -x "$python_bin" ]] ||
+  fail "PYTHON_BIN must name an absolute executable Python path"
+[[ -f "$build_constraints_file" ]] || fail "build constraints are missing"
+[[ -x "$nologin_shell" ]] || fail "$nologin_shell is required"
+[[ -f /etc/login.defs ]] || fail "/etc/login.defs is required"
+regular_uid_min="$(awk '$1 == "UID_MIN" {print $2; exit}' /etc/login.defs)"
+regular_gid_min="$(awk '$1 == "GID_MIN" {print $2; exit}' /etc/login.defs)"
+[[ "$regular_uid_min" =~ ^[0-9]+$ && "$regular_uid_min" -gt 0 ]] ||
+  fail "UID_MIN is invalid"
+[[ "$regular_gid_min" =~ ^[0-9]+$ && "$regular_gid_min" -gt 0 ]] ||
+  fail "GID_MIN is invalid"
 git -C "$repo_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
   fail "installer must run from a Git checkout"
 [[ -z "$(git -C "$repo_dir" status --porcelain --untracked-files=all)" ]] ||
@@ -47,6 +61,7 @@ source_revision="$(git -C "$repo_dir" rev-parse --verify 'HEAD^{commit}')"
 [[ "$source_revision" =~ ^[0-9a-f]{40}$ ]] || fail "source revision is invalid"
 release_dir="$release_root/$source_revision"
 release_executable="$release_dir/venv/bin/local-inference-gateway"
+release_python="$release_dir/venv/bin/python"
 release_marker="$release_dir/SOURCE_REVISION"
 
 if [[ -e "$active_venv" && ! -L "$active_venv" ]]; then
@@ -61,9 +76,30 @@ if ! getent passwd "$service_identity" >/dev/null; then
     --system \
     --gid "$service_identity" \
     --home-dir "$state_dir" \
-    --shell /usr/sbin/nologin \
+    --shell "$nologin_shell" \
     "$service_identity"
 fi
+
+service_group_record="$(getent group "$service_identity")"
+IFS=: read -r service_group_name _ service_group_gid _ <<<"$service_group_record"
+[[ "$service_group_name" == "$service_identity" && "$service_group_gid" =~ ^[0-9]+$ ]] ||
+  fail "existing service group is incompatible"
+[[ "$service_group_gid" -gt 0 && "$service_group_gid" -lt "$regular_gid_min" ]] ||
+  fail "existing service group is not a system group"
+
+service_record="$(getent passwd "$service_identity")"
+IFS=: read -r service_name _ service_uid service_gid _ service_home service_shell \
+  <<<"$service_record"
+[[ "$service_name" == "$service_identity" && "$service_uid" =~ ^[0-9]+$ ]] ||
+  fail "existing service account is incompatible"
+[[ "$service_uid" -gt 0 && "$service_uid" -lt "$regular_uid_min" ]] ||
+  fail "existing service account is not a system account"
+[[ "$service_gid" == "$service_group_gid" ]] || fail "service account primary group is incompatible"
+[[ "$service_home" == "$state_dir" ]] || fail "service account home is incompatible"
+[[ "$service_shell" == "$nologin_shell" ]] || fail "service account shell is incompatible"
+runuser --user "$service_identity" -- "$python_bin" -c \
+  'import sys; raise SystemExit(sys.version_info < (3, 12))' >/dev/null 2>&1 ||
+  fail "service account cannot execute the selected Python 3.12+ interpreter"
 
 install -d -o root -g root -m 0755 "$install_root" "$release_root"
 install -d -o root -g "$service_identity" -m 0750 "$config_dir"
@@ -86,10 +122,11 @@ else
     --no-emit-project \
     --format requirements.txt \
     --output-file "$constraints_file" >/dev/null
-  "$uv_bin" venv "$release_dir/venv"
+  "$uv_bin" venv --python "$python_bin" "$release_dir/venv"
   "$uv_bin" pip install \
     --python "$release_dir/venv/bin/python" \
     --constraints "$constraints_file" \
+    --build-constraints "$build_constraints_file" \
     "$repo_dir"
   [[ -x "$release_executable" ]] ||
     fail "installed release has no gateway executable"
@@ -97,6 +134,10 @@ else
   chmod -R go-w "$release_dir"
   release_created=false
 fi
+
+runuser --user "$service_identity" -- "$release_python" -c \
+  'import local_inference_gateway' >/dev/null 2>&1 ||
+  fail "service account cannot execute the installed gateway release"
 
 temporary_link="$install_root/.venv-link.$$"
 ln -s -- "$release_dir/venv" "$temporary_link"

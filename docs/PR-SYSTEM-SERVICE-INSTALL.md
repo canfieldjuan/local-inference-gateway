@@ -16,11 +16,13 @@ Root cause:
 Required change surface:
 
 1. Add one root-run systemd installer that accepts no secret values and refuses a dirty tracked
-   checkout, missing `git`/`uv`/systemd prerequisites, or an unsupported existing install shape.
+   checkout, missing `git`/`uv`/Python/systemd prerequisites, an incompatible existing service
+   identity, or an unsupported existing install shape.
 2. Create the existing `local-inference-gateway` system identity when absent and keep the shipped
    unit's single-process, dedicated-user, protected-state topology unchanged.
-3. Export locked production constraints and install the current clean Git revision into an immutable
-   release directory under `/opt/local-inference-gateway/releases/<full-sha>`.
+3. Export locked production constraints, pin the isolated build environment, and install the current
+   clean Git revision with a service-readable Python into an immutable release directory under
+   `/opt/local-inference-gateway/releases/<full-sha>`.
 4. Activate only a completely installed release through an atomic `venv` symlink. Never mutate the
    active virtual environment in place and never delete prior releases automatically.
 5. Install the reviewed unit, create only the empty private configuration/state directories, and run
@@ -44,7 +46,8 @@ Explicit non-scope:
 
 Assumptions and blockers:
 
-- The target is a systemd Linux appliance with root access, `git`, and `uv` available.
+- The target is a systemd Linux appliance with root access, `git`, `uv`, and a service-readable
+  Python 3.12+ interpreter available.
 - Private configuration will use `/etc/local-inference-gateway`; mutable gateway state will use
   `/var/lib/local-inference-gateway`; the package snapshot lives under `/opt`.
 - The gateway must remain stopped until the operator supplies a complete private environment,
@@ -62,8 +65,9 @@ Verification plan:
 
 ### Acceptance criteria
 
-1. A non-root caller, dirty tracked checkout, missing prerequisite, or regular file/directory at the
-   activation path is rejected before changing the active release.
+1. A non-root caller, dirty tracked checkout, missing prerequisite, incompatible service identity,
+   inaccessible Python, or regular file/directory at the activation path is rejected before
+   changing the active release.
 2. The installed release path contains the full source commit identity and is populated completely
    before the active symlink changes.
 3. A rerun for the same clean commit is idempotent and reuses only a valid installed executable.
@@ -77,10 +81,13 @@ Verification plan:
 
 ### Implementation summary
 
-- `deploy/systemd/install.sh` now installs a clean, locked Git revision into a root-owned,
+- `deploy/systemd/install.sh` now validates the dedicated identity and service-readable interpreter,
+  installs a clean Git revision with locked runtime and build dependencies into a root-owned,
   commit-addressed release, rejects incomplete or mismatched existing releases, flips the active
-  virtual-environment symlink only after executable validation, installs the existing unit, and
-  performs only `daemon-reload`.
+  virtual-environment symlink only after service-user import validation, installs the existing unit,
+  and performs only `daemon-reload`.
+- `deploy/systemd/build-constraints.txt` pins the complete isolated Hatchling build environment used
+  by the installer so one commit-addressed release does not resolve differently over time.
 - `tests/test_deployment.py` now exercises shell syntax and non-root rejection and asserts the clean
   revision, immutable-release, identity-marker, atomic-activation, no-secret, and no-service-action
   boundaries while retaining the existing unit checks.
@@ -91,21 +98,24 @@ Verification plan:
 
 ### Cold diff audit
 
-- `deploy/systemd/install.sh:4-44` defines fixed system paths and fail-closed admission for root,
-  prerequisites, an absolute executable `uv`, a Git checkout, and a clean worktree. This satisfies
-  contract items 1 and 2 and is covered by `tests/test_deployment.py:29-46,49-74` plus `bash -n`.
-- `deploy/systemd/install.sh:46-104` derives the full commit identity, rejects symlinked/incomplete
-  or identity-mismatched releases, installs locked production dependencies at their final path,
-  removes only a newly created incomplete release on failure, and atomically replaces the active
-  symlink after validation. This satisfies contract items 3 and 4 and is covered by
-  `tests/test_deployment.py:49-74`.
-- `deploy/systemd/install.sh:106-112` installs the reviewed unit and reloads systemd without any
-  service lifecycle action or secret provisioning. This satisfies contract item 5 and is covered by
-  `tests/test_deployment.py:77-88` and the preserved unit assertions at lines 13-26.
+- `deploy/systemd/install.sh` defines fixed system paths and fail-closed admission for root,
+  prerequisites, absolute executable `uv`/Python paths, a Git checkout, and a clean worktree; it
+  creates or validates the non-login system identity against the host's regular UID/GID boundary and
+  proves that identity can execute Python. This satisfies contract items 1 and 2 and is covered by
+  `tests/test_deployment.py` plus `bash -n`.
+- `deploy/systemd/install.sh` and `deploy/systemd/build-constraints.txt` derive the full commit
+  identity, reject symlinked/incomplete or identity-mismatched releases, install locked runtime and
+  build dependencies at their final path, prove the service identity can import the installed
+  package, remove only a newly created incomplete release on failure, and atomically replace the
+  active symlink after validation. This satisfies contract items 3 and 4 and is covered by
+  `tests/test_deployment.py`.
+- `deploy/systemd/install.sh` installs the reviewed unit and reloads systemd without any service
+  lifecycle action or secret provisioning. This satisfies contract item 5 and is covered by
+  `tests/test_deployment.py` and the preserved unit assertions.
 - `README.md:192-252` separates package installation, operator-owned private provisioning, explicit
   activation, and inspection. This satisfies contract item 6.
-- Verification on the final implementation reported `4 passed, 2 warnings` for the focused
-  deployment tests, `199 passed, 1 skipped, 2 warnings` for full pytest, `All checks passed!` for
+- Verification on the final implementation reported `5 passed, 2 warnings` for the focused
+  deployment tests, `200 passed, 1 skipped, 2 warnings` for full pytest, `All checks passed!` for
   Ruff lint, `31 files already formatted`, no mypy issues in 7 source files, 39 locked packages,
   both wheel and source distribution built, valid Bash syntax, and a clean whitespace diff.
 - No untraced runtime, dependency, schema, routing, model, credential, application, or service-state
