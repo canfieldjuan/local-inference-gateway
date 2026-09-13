@@ -71,8 +71,9 @@ Verification plan:
    the active release.
 2. The installed release path contains the full source commit identity and is populated completely
    before the active symlink changes.
-3. A rerun for the same clean commit is idempotent and reuses only a valid installed executable whose
-   release symlinks resolve inside the immutable tree or to root-owned non-writable regular files.
+3. A rerun for the same clean commit is idempotent and reuses only a service-readable valid installed
+   executable whose release symlinks traverse only root-owned non-writable paths and resolve inside
+   the immutable tree or to root-owned non-writable regular files.
 4. The installer creates no secret-bearing file and never reads secret values or application data.
 5. The installer performs daemon reload but contains no service start, stop, restart, enable, or
    disable operation.
@@ -86,11 +87,12 @@ Verification plan:
 - `deploy/systemd/install.sh` now requires a local-files-only dedicated identity selected identically
   by default NSS with no supplementary groups and a service-readable interpreter whose full canonical
   path is root-owned and non-writable, captures the selected commit into a root-owned snapshot,
-  installs that snapshot with locked runtime and build dependencies into a root-owned commit-addressed
-  release, rejects incomplete, mismatched, mutable, or externally redirected releases including every
-  unsafe symlink target, rejects redirected managed paths, serializes installers, flips the active
-  virtual-environment symlink only after an isolated service-user import resolves inside the release
-  environment, installs the snapshot's reviewed unit, and performs only `daemon-reload`.
+  installs that snapshot with locked runtime and build dependencies into a root-owned, service-readable
+  commit-addressed release, rejects incomplete, mismatched, mutable, or externally redirected releases
+  including every unsafe symlink traversal and target, rejects redirected managed paths, serializes
+  installers, flips the active virtual-environment symlink only after an isolated service-user import
+  resolves inside the release environment, installs the snapshot's reviewed unit, and performs only
+  `daemon-reload`.
 - `deploy/systemd/build-constraints.txt` pins the complete isolated Hatchling build environment used
   by the installer so one commit-addressed release does not resolve differently over time.
 - `tests/test_deployment.py` now exercises shell syntax and non-root rejection and asserts the clean
@@ -115,11 +117,12 @@ Verification plan:
 - `deploy/systemd/install.sh` and `deploy/systemd/build-constraints.txt` derive the full commit
   identity, archive that immutable revision into a private snapshot, reject symlinked/incomplete or
   identity-mismatched releases, install locked runtime and build dependencies at their final path,
+  explicitly grant safe read/traverse permissions despite the installer's private default umask,
   reject release trees that are not root-owned and non-writable by group/other, require the installed
   entrypoint and revision marker to be regular in-release files rather than symlinks, validate every
-  remaining symlink resolves inside the release or to a root-owned non-writable external regular file,
-  and prove in an isolated environment that the service identity imports the package from the active
-  release prefix;
+  remaining symlink's lexical traversal and canonical target before allowing it to resolve inside the
+  release or to a root-owned non-writable external regular file, and prove in an isolated environment
+  that the service identity imports the package from the active release prefix;
   it retains the incomplete-release cleanup guard through that proof and atomically replaces the
   active symlink afterward. This satisfies contract items 3 and 4 and is covered by
   `tests/test_deployment.py`.
@@ -134,7 +137,9 @@ Verification plan:
   both wheel and source distribution built, valid Bash syntax, and a clean whitespace diff. Two-sided
   probes accepted `/usr/bin/python3.12`, an internal release link, and a root-controlled external
   interpreter link while rejecting writable `/tmp` ancestry and a writable external release target;
-  default and files-only NSS both resolved root to UID 0 on the target host.
+  default and files-only NSS both resolved root to UID 0 on the target host. A fresh `uv venv` under
+  the private umask reproduced mode `700`; the installer's permission normalization changed both the
+  virtual-environment root and `bin` directory to mode `755`.
 - No untraced runtime, dependency, schema, routing, model, credential, application, or service-state
   change appears in the diff.
 

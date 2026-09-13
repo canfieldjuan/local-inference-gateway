@@ -71,6 +71,7 @@ def test_systemd_installer_activates_only_complete_clean_revision() -> None:
     assert '-f "$release_marker"' in installer
     assert '[[ "$(<"$release_marker")" == "$source_revision" ]]' in installer
     assert 'printf \'%s\\n\' "$source_revision" >"$release_marker"' in installer
+    assert 'chmod -R a+rX,go-w "$release_dir"' in installer
     assert "release_created=true" in installer
     assert '[[ "$release_created" == true' in installer
     assert 'ln -s -- "$release_dir/venv" "$temporary_link"' in installer
@@ -152,6 +153,8 @@ def test_systemd_installer_guards_managed_paths_and_serializes_installation() ->
     assert '! -L "$release_executable"' in installer
     assert '! -L "$release_marker"' in installer
     assert 'find "$release_dir" -xdev -type l -print0' in installer
+    assert 'release_link_target="$(readlink -- "$release_link")"' in installer
+    assert 'validate_root_owned_nonwritable_path "$release_link_path"' in installer
     assert 'readlink -f -- "$release_link"' in installer
     assert 'validate_root_owned_nonwritable_path "$resolved_release_link"' in installer
     assert installer.index("flock --exclusive --nonblock 9") < installer.index(

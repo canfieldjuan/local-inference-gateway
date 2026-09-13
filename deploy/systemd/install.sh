@@ -63,9 +63,16 @@ validate_root_owned_nonwritable_path() {
 }
 
 validate_release_symlinks() {
-  local release_link resolved_release_link
+  local release_link release_link_path release_link_target resolved_release_link
 
   while IFS= read -r -d '' release_link; do
+    release_link_target="$(readlink -- "$release_link")" ||
+      fail "release contains an unreadable symbolic link: $release_link"
+    case "$release_link_target" in
+      /*) release_link_path="$release_link_target" ;;
+      *) release_link_path="${release_link%/*}/$release_link_target" ;;
+    esac
+    validate_root_owned_nonwritable_path "$release_link_path"
     resolved_release_link="$(readlink -f -- "$release_link")" ||
       fail "release contains an unresolved symbolic link: $release_link"
     [[ -e "$resolved_release_link" ]] ||
@@ -221,7 +228,7 @@ else
   [[ -x "$release_executable" && -f "$release_executable" && ! -L "$release_executable" ]] ||
     fail "installed release has no gateway executable"
   printf '%s\n' "$source_revision" >"$release_marker"
-  chmod -R go-w "$release_dir"
+  chmod -R a+rX,go-w "$release_dir"
 fi
 
 release_violation="$(
