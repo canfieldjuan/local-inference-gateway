@@ -275,10 +275,23 @@ def test_ollama_user_installer_validates_storage_and_never_activates() -> None:
     assert '[[ -f "$ollama_bin" && -x "$ollama_bin" && ! -L "$ollama_bin" ]]' in installer
     assert 'validate_root_owned_nonwritable_path "$resolved_ollama"' in installer
     assert 'loginctl show-user "$current_user" -p Linger --value' in installer
-    assert "systemctl --user show-environment" in installer
+    assert 'manager_environment="$(systemctl --user show-environment)" ||' in installer
+    assert (
+        'XDG_CONFIG_HOME=*) manager_xdg_config_home="${manager_assignment#XDG_CONFIG_HOME=}"'
+        in installer
+    )
+    assert 'manager_xdg_config_home" == "$home_dir/.config"' in installer
     assert '[[ "$candidate_path" =~ ^/[A-Za-z0-9._/-]+$ ]]' in installer
     assert '[[ -d "$model_mount" ]]' in installer
     assert '[[ -d "$models_dir" ]]' in installer
+    assert '[[ "$model_mount" != / ]]' in installer
+    assert '[[ "$resolved_mount" != / ]]' in installer
+    assert installer.index('[[ "$model_mount" != / ]]') < installer.index(
+        'validate_environment_path "$model_mount"'
+    )
+    assert installer.index('[[ "$resolved_mount" != / ]]') < installer.index(
+        'validate_environment_path "$resolved_mount"'
+    )
     assert 'mountpoint --quiet "$resolved_mount"' in installer
     assert '"$resolved_mount"/*' in installer
     assert '[[ ! -L "$managed_directory" ]]' in installer

@@ -90,7 +90,16 @@ IFS=: read -r passwd_name _ passwd_uid _ _ home_dir _ <<<"$passwd_record"
   fail "cannot resolve the current user's home directory"
 [[ "$(loginctl show-user "$current_user" -p Linger --value)" == yes ]] ||
   fail "systemd user lingering must be enabled before installation"
-systemctl --user show-environment >/dev/null || fail "the systemd user manager is unavailable"
+manager_environment="$(systemctl --user show-environment)" ||
+  fail "the systemd user manager is unavailable"
+manager_xdg_config_home=""
+while IFS= read -r manager_assignment; do
+  case "$manager_assignment" in
+    XDG_CONFIG_HOME=*) manager_xdg_config_home="${manager_assignment#XDG_CONFIG_HOME=}" ;;
+  esac
+done <<<"$manager_environment"
+[[ -z "$manager_xdg_config_home" || "$manager_xdg_config_home" == "$home_dir/.config" ]] ||
+  fail "the systemd user manager uses a non-default XDG_CONFIG_HOME"
 
 [[ -f "$ollama_bin" && -x "$ollama_bin" && ! -L "$ollama_bin" ]] ||
   fail "$ollama_bin must be a regular executable, not a symbolic link"
@@ -98,12 +107,14 @@ resolved_ollama="$(readlink -f -- "$ollama_bin")"
 [[ "$resolved_ollama" == "$ollama_bin" ]] || fail "$ollama_bin must resolve to itself"
 validate_root_owned_nonwritable_path "$resolved_ollama"
 
+[[ "$model_mount" != / ]] || fail "the root filesystem cannot be used as the model mount"
 validate_environment_path "$model_mount" "model mount"
 validate_environment_path "$models_dir" "models directory"
 [[ -d "$model_mount" ]] || fail "model mount does not exist: $model_mount"
 [[ -d "$models_dir" ]] || fail "models directory does not exist: $models_dir"
 resolved_mount="$(readlink -e -- "$model_mount")"
 resolved_models="$(readlink -e -- "$models_dir")"
+[[ "$resolved_mount" != / ]] || fail "the root filesystem cannot be used as the model mount"
 validate_environment_path "$resolved_mount" "resolved model mount"
 validate_environment_path "$resolved_models" "resolved models directory"
 mountpoint --quiet "$resolved_mount" || fail "model mount is not an active mount point: $resolved_mount"
