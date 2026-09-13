@@ -47,6 +47,7 @@ class StubWorker:
         self.health_timeouts: list[float] = []
         self.infer_calls = 0
         self.infer_timeouts: list[float] = []
+        self.infer_deadlines: list[float | None] = []
 
     def health(
         self,
@@ -57,10 +58,17 @@ class StubWorker:
         self.health_timeouts.append(timeout_seconds)
         return self.available
 
-    def infer(self, request: InferenceRequest, timeout_seconds: float) -> WorkerResult:
+    def infer(
+        self,
+        request: InferenceRequest,
+        timeout_seconds: float,
+        *,
+        deadline: float | None = None,
+    ) -> WorkerResult:
         del request
         self.infer_calls += 1
         self.infer_timeouts.append(timeout_seconds)
+        self.infer_deadlines.append(deadline)
         if self.error is not None:
             raise self.error
         return WorkerResult("application/json", self.result)
@@ -124,6 +132,25 @@ def test_worker_inserts_model_only_at_private_worker_boundary(gateway) -> None: 
     seeded["generation"]["seed"] = 9_223_372_036_854_775_807  # type: ignore[index]
     worker.infer(InferenceRequest.model_validate(seeded), 30)
     assert requests[1]["seed"] == 9_223_372_036_854_775_807
+
+
+def test_worker_rechecks_absolute_deadline_before_http_submission(gateway) -> None:  # type: ignore[no-untyped-def]
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200)
+
+    worker = worker_with_handler(handler)
+
+    with pytest.raises(WorkerUnavailable, match="deadline expired"):
+        worker.infer(
+            InferenceRequest.model_validate(gateway.request()),
+            30,
+            deadline=time.monotonic() - 1,
+        )
+
+    assert requests == []
 
 
 def test_worker_health_requires_exact_configured_model() -> None:
@@ -249,6 +276,8 @@ def test_fallback_worker_prefers_primary_without_touching_fallback(gateway) -> N
 
     assert result.content == '{"worker":"primary"}'
     assert primary.infer_calls == 1
+    assert primary.infer_deadlines[0] is not None
+    assert 0 < primary.infer_timeouts[0] <= 30
     assert primary.capacity_calls == 0
     assert fallback.health_calls == []
     assert fallback.infer_calls == 0
@@ -271,6 +300,8 @@ def test_fallback_worker_uses_fallback_only_before_primary_submission(gateway) -
     assert primary.capacity_calls == 1
     assert fallback.health_calls == [("email.analyze", 1)]
     assert fallback.infer_calls == 1
+    assert fallback.infer_deadlines[0] is not None
+    assert 0 < fallback.infer_timeouts[0] <= 30
 
 
 def test_fallback_worker_rejects_unknown_primary_without_capacity_probe(gateway) -> None:  # type: ignore[no-untyped-def]

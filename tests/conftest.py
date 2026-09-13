@@ -54,8 +54,14 @@ class FakeWorker:
             return self.task_health[task]
         return self.available
 
-    def infer(self, request, timeout_seconds: float) -> WorkerResult:  # type: ignore[no-untyped-def]
-        del request, timeout_seconds
+    def infer(  # type: ignore[no-untyped-def]
+        self,
+        request,
+        timeout_seconds: float,
+        *,
+        deadline: float | None = None,
+    ) -> WorkerResult:
+        del request, timeout_seconds, deadline
         self.calls += 1
         self.started.set()
         if not self.release.wait(5):

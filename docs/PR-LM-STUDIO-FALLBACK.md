@@ -104,9 +104,10 @@ Verification plan:
 - Added `FallbackWorker` as a pre-dispatch router. Ollama remains primary; fallback is admitted only
   for published tasks when the primary model is proven unavailable, Ollama's canonical `/api/ps`
   response is exactly empty, and LM Studio reports the configured model. Unknown primary health is
-  distinct from proven unavailability and fails closed. One monotonic deadline bounds every routing
-  probe and the selected inference call, so probe time cannot permit a dispatch after request expiry.
-  No exception after an Ollama infer call can route to LM Studio.
+  distinct from proven unavailability and fails closed. One monotonic deadline crosses every
+  routing probe into the selected worker and is rechecked immediately before HTTP submission, so
+  probe and setup time cannot permit a dispatch after request expiry. No exception after an Ollama
+  infer call can route to LM Studio.
 - Made health checks task-aware while preserving the existing task-only public response. Worker,
   model, token, and capacity identities remain private to the gateway.
 - Documented the optional appliance configuration and added configuration, boundary, routing,
@@ -122,8 +123,9 @@ Verification plan:
   without following symlinks or accepting a non-private/non-regular file.
 - `src/local_inference_gateway/worker.py` owns runtime selection and shares only payload/result
   validation. The primary is checked first with a tri-state availability result, the fallback
-  capacity check is fail-closed, one remaining deadline crosses every probe and dispatch, and there
-  is no exception handler around primary inference that could trigger a second dispatch.
+  capacity check is fail-closed, one absolute deadline crosses every probe into the HTTP send
+  boundary, and there is no exception handler around primary inference that could trigger a second
+  dispatch.
 - `src/local_inference_gateway/app.py` constructs the router only from a complete optional setting
   and reports availability per authorized task without adding worker identity to the response.
 - `tests/` independently exercises the allowed and refused sides of configuration, capacity,

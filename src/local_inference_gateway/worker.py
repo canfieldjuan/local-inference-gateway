@@ -59,7 +59,13 @@ class InferenceWorker(Protocol):
         timeout_seconds: float = 5.0,
     ) -> bool: ...
 
-    def infer(self, request: InferenceRequest, timeout_seconds: float) -> WorkerResult: ...
+    def infer(
+        self,
+        request: InferenceRequest,
+        timeout_seconds: float,
+        *,
+        deadline: float | None = None,
+    ) -> WorkerResult: ...
 
 
 class OllamaWorker:
@@ -105,8 +111,14 @@ class OllamaWorker:
             available = self.model in model_ids
             return WorkerAvailability.AVAILABLE if available else WorkerAvailability.UNAVAILABLE
 
-    def infer(self, request: InferenceRequest, timeout_seconds: float) -> WorkerResult:
-        return asyncio.run(self._infer(request, timeout_seconds))
+    def infer(
+        self,
+        request: InferenceRequest,
+        timeout_seconds: float,
+        *,
+        deadline: float | None = None,
+    ) -> WorkerResult:
+        return asyncio.run(self._infer(request, timeout_seconds, deadline))
 
     def fallback_capacity_available(self, timeout_seconds: float = 5.0) -> bool:
         try:
@@ -125,24 +137,28 @@ class OllamaWorker:
                 document = await _bounded_json(response)
         return document.get("models") == []
 
-    async def _infer(self, request: InferenceRequest, timeout_seconds: float) -> WorkerResult:
+    async def _infer(
+        self,
+        request: InferenceRequest,
+        timeout_seconds: float,
+        deadline: float | None,
+    ) -> WorkerResult:
         payload = self._payload(request)
         try:
-            async with asyncio.timeout(timeout_seconds):
-                async with (
-                    self._client(timeout_seconds) as client,
-                    client.stream(
+            async with self._client(timeout_seconds) as client:
+                dispatch_timeout = _dispatch_timeout(timeout_seconds, deadline)
+                async with asyncio.timeout(dispatch_timeout):
+                    async with client.stream(
                         "POST",
                         f"{self.base_url}/v1/chat/completions",
                         content=encode_json_bytes(payload),
                         headers={"Content-Type": "application/json"},
-                    ) as response,
-                ):
-                    if response.status_code in {404, 429} or 500 <= response.status_code <= 599:
-                        raise WorkerUnavailable("worker rejected admission while unavailable")
-                    if response.status_code >= 400:
-                        raise InvalidWorkerOutput("worker rejected the gateway request")
-                    document = await _bounded_json(response)
+                    ) as response:
+                        if response.status_code in {404, 429} or 500 <= response.status_code <= 599:
+                            raise WorkerUnavailable("worker rejected admission while unavailable")
+                        if response.status_code >= 400:
+                            raise InvalidWorkerOutput("worker rejected the gateway request")
+                        document = await _bounded_json(response)
         except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
             raise WorkerUnavailable("worker connection was unavailable") from exc
         except (WorkerUnavailable, InvalidWorkerOutput):
@@ -235,17 +251,32 @@ class FallbackWorker:
         except WorkerUnavailable:
             return False
 
-    def infer(self, request: InferenceRequest, timeout_seconds: float) -> WorkerResult:
-        deadline = time.monotonic() + timeout_seconds
+    def infer(
+        self,
+        request: InferenceRequest,
+        timeout_seconds: float,
+        *,
+        deadline: float | None = None,
+    ) -> WorkerResult:
+        local_deadline = time.monotonic() + timeout_seconds
+        deadline = local_deadline if deadline is None else min(deadline, local_deadline)
         task = (request.task.id, request.task.version)
         availability = self.primary.availability(task, self._remaining(deadline))
         if availability is WorkerAvailability.AVAILABLE:
-            return self.primary.infer(request, self._remaining(deadline))
+            return self.primary.infer(
+                request,
+                self._remaining(deadline),
+                deadline=deadline,
+            )
         if availability is not WorkerAvailability.UNAVAILABLE or not self._fallback_ready(
             task, deadline
         ):
             raise WorkerUnavailable("no worker is safely available before dispatch")
-        return self.fallback.infer(request, self._remaining(deadline))
+        return self.fallback.infer(
+            request,
+            self._remaining(deadline),
+            deadline=deadline,
+        )
 
     def _fallback_ready(self, task: tuple[str, int] | None, deadline: float) -> bool:
         if task is None or task not in self.eligible_tasks:
@@ -300,6 +331,15 @@ def _validated_result(request: InferenceRequest, document: dict[str, object]) ->
     except (SchemaError, ValidationError) as exc:
         raise InvalidWorkerOutput("worker content does not match response schema") from exc
     return WorkerResult(media_type="application/json", content=content)
+
+
+def _dispatch_timeout(timeout_seconds: float, deadline: float | None) -> float:
+    if deadline is None:
+        return timeout_seconds
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise WorkerUnavailable("worker routing deadline expired before dispatch")
+    return min(timeout_seconds, remaining)
 
 
 async def _bounded_json(response: httpx.Response) -> dict[str, object]:
