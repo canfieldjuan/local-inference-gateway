@@ -331,3 +331,121 @@ def test_ollama_user_installer_validates_storage_and_never_activates() -> None:
     assert "/etc/fstab" not in installer
     assert "mkdir" not in installer
     assert not re.search(r"(?m)(?:^|[;&|()])\s*(?:source|eval|\.)\s+", installer)
+
+
+def test_model_storage_mount_template_is_nonblocking_and_bounded(tmp_path: Path) -> None:
+    template = (ROOT / "deploy" / "systemd" / "local-inference-model-storage.mount.in").read_text(
+        encoding="utf-8"
+    )
+    mount_point = "/mnt/local-inference-models"
+    unit_name = subprocess.run(
+        ["systemd-escape", "--path", "--suffix=mount", mount_point],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    rendered = (
+        template.replace("@DEVICE@", "/dev/disk/by-uuid/640266B902668FBA")
+        .replace("@MOUNT_POINT@", mount_point)
+        .replace("@OWNER_UID@", "1000")
+        .replace("@OWNER_GID@", "1000")
+    )
+    unit_path = tmp_path / unit_name
+    unit_path.write_text(rendered, encoding="utf-8")
+
+    assert rendered.startswith("# Managed by local-inference-gateway install-model-mount.sh\n")
+    assert "What=/dev/disk/by-uuid/640266B902668FBA" in rendered
+    assert f"Where={mount_point}" in rendered
+    assert "Type=ntfs3" in rendered
+    assert "Options=rw,nosuid,nodev,nofail,relatime,uid=1000,gid=1000," in rendered
+    assert "TimeoutSec=30s" in rendered
+    assert "ReadWriteOnly=true" in rendered
+    assert "WantedBy=local-fs.target" in rendered
+    assert "@" not in rendered
+    subprocess.run(
+        ["systemd-analyze", "verify", str(unit_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_model_storage_mount_installer_fails_closed_and_never_activates() -> None:
+    installer_path = ROOT / "deploy" / "systemd" / "install-model-mount.sh"
+    installer = installer_path.read_text(encoding="utf-8")
+
+    assert installer_path.stat().st_mode & 0o111
+    subprocess.run(["bash", "-n", str(installer_path)], check=True)
+    if os.geteuid() != 0:
+        result = subprocess.run(
+            [
+                "bash",
+                str(installer_path),
+                "--uuid",
+                "640266B902668FBA",
+                "--mount-point",
+                "/mnt/local-inference-models",
+                "--models-dir",
+                "/mnt/local-inference-models/Ollama/models",
+                "--owner-user",
+                "nobody",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert result.stderr == "error: run this installer as root\n"
+
+    assert '[[ "$filesystem_uuid" =~ ^[A-Fa-f0-9-]{4,64}$ ]]' in installer
+    assert '[[ "$candidate_path" =~ ^/[A-Za-z0-9._/-]+$ ]]' in installer
+    assert '[[ "$candidate_path" != / ]]' in installer
+    assert installer.index('[[ "$candidate_path" != / ]]') < installer.index(
+        '[[ "$candidate_path" =~ ^/[A-Za-z0-9._/-]+$ ]]'
+    )
+    assert '[[ -d "$mount_point" && ! -L "$mount_point" ]]' in installer
+    assert '[[ -d "$models_dir" && ! -L "$models_dir" ]]' in installer
+    assert '"$resolved_mount"/*' in installer
+    assert 'getent --service=files passwd "$owner_user"' in installer
+    assert "default NSS does not select the local owner user" in installer
+    assert 'device_path="/dev/disk/by-uuid/$filesystem_uuid"' in installer
+    assert '[[ -b "$resolved_device" ]]' in installer
+    assert 'blkid -s UUID -o value "$resolved_device"' in installer
+    assert 'findmnt --mountpoint "$resolved_mount"' in installer
+    assert '[[ "$mounted_type" == ntfs3 ]]' in installer
+    assert "rw nosuid nodev relatime" in installer
+    assert 'for observed_option in "${observed_options[@]}"' in installer
+    assert '"uid=$owner_uid" | "gid=$owner_gid")' in installer
+    assert "current mount option is outside the supported profile" in installer
+    assert "findmnt --verify --tab-file /etc/fstab" in installer
+    assert 'findmnt --fstab --evaluate --target "$resolved_mount"' in installer
+    assert (
+        'configured_sources="$(findmnt --fstab --evaluate --noheadings --output SOURCE)" ||'
+        in installer
+    )
+    assert "cannot inspect configured /etc/fstab sources" in installer
+    assert 'case "$configured_source" in' in installer
+    assert "/dev/*)" in installer
+    assert 'readlink -f -- "$configured_source"' in installer
+    assert 'configured_device" != "$resolved_device"' in installer
+    assert "status --porcelain --untracked-files=all" in installer
+    assert "rev-parse --verify 'HEAD^{commit}'" in installer
+    assert 'template_blob="$source_revision:' in installer
+    assert 'cat-file blob "$template_blob"' in installer
+    assert 'unit_name="$(systemd-escape --path --suffix=mount "$resolved_mount")"' in installer
+    assert '[[ ! -L "$unit_target" ]]' in installer
+    assert '[[ "$existing_marker" == "$managed_marker" ]]' in installer
+    assert "refusing to replace an unmanaged mount unit" in installer
+    assert 'systemd-analyze verify "$validation_unit"' in installer
+    assert 'install -o root -g root -m 0644 "$validation_unit" "$temporary_unit"' in installer
+    assert 'mv -f -- "$temporary_unit" "$unit_target"' in installer
+    assert "systemctl daemon-reload" in installer
+    assert "sed -i" not in installer
+    assert ">>/etc/fstab" not in installer.replace(" ", "")
+    assert not re.search(r"(?m)^\s*(?:mount|umount)\s", installer)
+    assert not re.search(
+        r"systemctl\s+(?:--[^ ]+\s+)*(?:start|stop|restart|enable|disable)\b",
+        installer,
+    )
+    assert not re.search(r"(?m)(?:^|[;&|()])\s*(?:source|eval|\.)\s+", installer)

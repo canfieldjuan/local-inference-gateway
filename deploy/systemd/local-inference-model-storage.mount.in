@@ -1,0 +1,15 @@
+# Managed by local-inference-gateway install-model-mount.sh
+[Unit]
+Description=Model storage for Local Inference Gateway
+
+[Mount]
+What=@DEVICE@
+Where=@MOUNT_POINT@
+Type=ntfs3
+Options=rw,nosuid,nodev,nofail,relatime,uid=@OWNER_UID@,gid=@OWNER_GID@,acl,iocharset=utf8,prealloc
+DirectoryMode=0755
+TimeoutSec=30s
+ReadWriteOnly=true
+
+[Install]
+WantedBy=local-fs.target
