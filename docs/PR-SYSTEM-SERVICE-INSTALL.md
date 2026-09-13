@@ -65,9 +65,9 @@ Verification plan:
 
 ### Acceptance criteria
 
-1. A non-root caller, dirty tracked checkout, missing prerequisite, incompatible service identity,
-   inaccessible Python, or regular file/directory at the activation path is rejected before
-   changing the active release.
+1. A non-root caller, dirty tracked checkout, missing prerequisite, non-local or supplementary-group
+   service identity, interpreter outside a root-owned non-writable path, inaccessible Python, or
+   regular file/directory at the activation path is rejected before changing the active release.
 2. The installed release path contains the full source commit identity and is populated completely
    before the active symlink changes.
 3. A rerun for the same clean commit is idempotent and reuses only a valid installed executable.
@@ -81,12 +81,14 @@ Verification plan:
 
 ### Implementation summary
 
-- `deploy/systemd/install.sh` now validates the dedicated identity and service-readable interpreter,
+- `deploy/systemd/install.sh` now requires a local-files-only dedicated identity with no supplementary
+  groups and a service-readable interpreter whose full canonical path is root-owned and non-writable,
   captures the selected commit into a root-owned snapshot, installs that snapshot with locked runtime
-  and build dependencies into a root-owned commit-addressed release, rejects incomplete or
-  mismatched or mutable existing releases, rejects redirected managed paths, serializes installers,
-  flips the active virtual-environment symlink only after service-user import validation, installs
-  the snapshot's reviewed unit, and performs only `daemon-reload`.
+  and build dependencies into a root-owned commit-addressed release, rejects incomplete, mismatched,
+  mutable, or externally redirected releases, rejects redirected managed paths, serializes installers,
+  flips the active virtual-environment symlink only after an isolated service-user import resolves
+  inside the release environment, installs the snapshot's reviewed unit, and performs only
+  `daemon-reload`.
 - `deploy/systemd/build-constraints.txt` pins the complete isolated Hatchling build environment used
   by the installer so one commit-addressed release does not resolve differently over time.
 - `tests/test_deployment.py` now exercises shell syntax and non-root rejection and asserts the clean
@@ -101,18 +103,21 @@ Verification plan:
 
 - `deploy/systemd/install.sh` defines fixed system paths and fail-closed admission for root,
   prerequisites, absolute executable `uv`/Python paths, a Git checkout, and a clean worktree; it
-  creates or validates the non-login system identity against the host's regular UID/GID boundary and
-  proves that identity can execute Python from a path visible inside the unit sandbox, rejects
-  symlinked/non-directory private paths before changing their ownership, and takes a host-wide
-  nonblocking installer lock. This satisfies contract items 1 and 2 and is covered by
+  creates or validates the local-files-only non-login system identity against the host's regular
+  UID/GID boundary, rejects supplementary group membership, and proves that identity can execute
+  Python only after every canonical interpreter path component is root-owned and non-writable;
+  it also rejects symlinked/non-directory private paths before changing their ownership and takes a
+  host-wide nonblocking installer lock. This satisfies contract items 1 and 2 and is covered by
   `tests/test_deployment.py` plus `bash -n`.
 - `deploy/systemd/install.sh` and `deploy/systemd/build-constraints.txt` derive the full commit
   identity, archive that immutable revision into a private snapshot, reject symlinked/incomplete or
   identity-mismatched releases, install locked runtime and build dependencies at their final path,
-  reject release trees that are not root-owned and non-writable by group/other, prove the service
-  identity can import the installed package, retain the incomplete-release cleanup guard through
-  that proof, and atomically replace the active symlink afterward. This satisfies contract items 3
-  and 4 and is covered by `tests/test_deployment.py`.
+  reject release trees that are not root-owned and non-writable by group/other, require the installed
+  entrypoint and revision marker to be regular in-release files rather than symlinks, and prove in an
+  isolated environment that the service identity imports the package from the active release prefix;
+  it retains the incomplete-release cleanup guard through that proof and atomically replaces the
+  active symlink afterward. This satisfies contract items 3 and 4 and is covered by
+  `tests/test_deployment.py`.
 - `deploy/systemd/install.sh` installs the reviewed unit and reloads systemd without any service
   lifecycle action or secret provisioning. This satisfies contract item 5 and is covered by
   `tests/test_deployment.py` and the preserved unit assertions.
@@ -121,7 +126,8 @@ Verification plan:
 - Verification on the final implementation reported `7 passed, 2 warnings` for the focused
   deployment tests, `202 passed, 1 skipped, 2 warnings` for full pytest, `All checks passed!` for
   Ruff lint, `31 files already formatted`, no mypy issues in 7 source files, 39 locked packages,
-  both wheel and source distribution built, valid Bash syntax, and a clean whitespace diff.
+  both wheel and source distribution built, valid Bash syntax, and a clean whitespace diff. A
+  two-sided function probe accepted `/usr/bin/python3.12` and rejected writable `/tmp` ancestry.
 - No untraced runtime, dependency, schema, routing, model, credential, application, or service-state
   change appears in the diff.
 

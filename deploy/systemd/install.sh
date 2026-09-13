@@ -41,10 +41,31 @@ fail() {
   exit 1
 }
 
+validate_root_owned_nonwritable_path() {
+  local candidate_path="$1"
+  local current_path=""
+  local metadata path_mode path_owner path_part
+  local -a path_parts checked_paths=("/")
+
+  IFS=/ read -r -a path_parts <<<"${candidate_path#/}"
+  for path_part in "${path_parts[@]}"; do
+    [[ -n "$path_part" ]] || continue
+    current_path="$current_path/$path_part"
+    checked_paths+=("$current_path")
+  done
+  for current_path in "${checked_paths[@]}"; do
+    metadata="$(stat -Lc '%u %a' -- "$current_path")" ||
+      fail "cannot inspect interpreter path component: $current_path"
+    read -r path_owner path_mode <<<"$metadata"
+    [[ "$path_owner" == 0 && "$((8#$path_mode & 0022))" -eq 0 ]] ||
+      fail "interpreter path component is not root-owned and non-writable: $current_path"
+  done
+}
+
 [[ "${EUID:-$(id -u)}" -eq 0 ]] || fail "run this installer as root"
 for command_name in \
-  awk chmod find flock git getent groupadd install ln mktemp mv readlink rm runuser systemctl tar \
-  useradd; do
+  awk chmod env find flock git getent groupadd id install ln mktemp mv readlink rm runuser stat \
+  systemctl tar useradd; do
   command -v "$command_name" >/dev/null 2>&1 || fail "$command_name is required"
 done
 [[ "$uv_bin" == /* && -f "$uv_bin" && -x "$uv_bin" ]] ||
@@ -58,6 +79,7 @@ case "$resolved_python" in
   /usr/* | /opt/* | /bin/*) ;;
   *) fail "PYTHON_BIN must resolve under /usr, /opt, or /bin for the unit sandbox" ;;
 esac
+validate_root_owned_nonwritable_path "$resolved_python"
 python_bin="$resolved_python"
 [[ -x "$nologin_shell" ]] || fail "$nologin_shell is required"
 [[ -f /etc/login.defs ]] || fail "/etc/login.defs is required"
@@ -97,10 +119,14 @@ done
 [[ ! -e "$unit_target" || -f "$unit_target" ]] ||
   fail "unit target must be absent or a regular file: $unit_target"
 
-if ! getent group "$service_identity" >/dev/null; then
+if ! getent --service=files group "$service_identity" >/dev/null; then
+  ! getent group "$service_identity" >/dev/null ||
+    fail "service group exists outside the local files database"
   groupadd --system "$service_identity"
 fi
-if ! getent passwd "$service_identity" >/dev/null; then
+if ! getent --service=files passwd "$service_identity" >/dev/null; then
+  ! getent passwd "$service_identity" >/dev/null ||
+    fail "service account exists outside the local files database"
   useradd \
     --system \
     --gid "$service_identity" \
@@ -109,14 +135,14 @@ if ! getent passwd "$service_identity" >/dev/null; then
     "$service_identity"
 fi
 
-service_group_record="$(getent group "$service_identity")"
+service_group_record="$(getent --service=files group "$service_identity")"
 IFS=: read -r service_group_name _ service_group_gid _ <<<"$service_group_record"
 [[ "$service_group_name" == "$service_identity" && "$service_group_gid" =~ ^[0-9]+$ ]] ||
   fail "existing service group is incompatible"
 [[ "$service_group_gid" -gt 0 && "$service_group_gid" -lt "$regular_gid_min" ]] ||
   fail "existing service group is not a system group"
 
-service_record="$(getent passwd "$service_identity")"
+service_record="$(getent --service=files passwd "$service_identity")"
 IFS=: read -r service_name _ service_uid service_gid _ service_home service_shell \
   <<<"$service_record"
 [[ "$service_name" == "$service_identity" && "$service_uid" =~ ^[0-9]+$ ]] ||
@@ -126,6 +152,8 @@ IFS=: read -r service_name _ service_uid service_gid _ service_home service_shel
 [[ "$service_gid" == "$service_group_gid" ]] || fail "service account primary group is incompatible"
 [[ "$service_home" == "$state_dir" ]] || fail "service account home is incompatible"
 [[ "$service_shell" == "$nologin_shell" ]] || fail "service account shell is incompatible"
+[[ "$(id -G "$service_identity")" == "$service_group_gid" ]] ||
+  fail "service account has supplementary group memberships"
 runuser --user "$service_identity" -- "$python_bin" -c \
   'import sys; raise SystemExit(sys.version_info < (3, 12))' >/dev/null 2>&1 ||
   fail "service account cannot execute the selected Python 3.12+ interpreter"
@@ -136,7 +164,8 @@ install -d -o "$service_identity" -g "$service_identity" -m 0700 "$state_dir"
 
 [[ ! -L "$release_dir" ]] || fail "release path must not be a symbolic link: $release_dir"
 if [[ -e "$release_dir" ]]; then
-  [[ -d "$release_dir" && -x "$release_executable" && -f "$release_marker" ]] ||
+  [[ -d "$release_dir" && -x "$release_executable" && -f "$release_executable" && \
+    ! -L "$release_executable" && -f "$release_marker" && ! -L "$release_marker" ]] ||
     fail "existing release is incomplete: $release_dir"
   [[ "$(<"$release_marker")" == "$source_revision" ]] ||
     fail "existing release identity does not match its path: $release_dir"
@@ -157,7 +186,7 @@ else
     --constraints "$constraints_file" \
     --build-constraints "$build_constraints_file" \
     "$source_dir"
-  [[ -x "$release_executable" ]] ||
+  [[ -x "$release_executable" && -f "$release_executable" && ! -L "$release_executable" ]] ||
     fail "installed release has no gateway executable"
   printf '%s\n' "$source_revision" >"$release_marker"
   chmod -R go-w "$release_dir"
@@ -173,8 +202,15 @@ if [[ "$resolved_release_python" != "$python_bin" && \
   "$resolved_release_python" != "$release_dir"/* ]]; then
   fail "installed Python resolves outside the selected interpreter and release"
 fi
-runuser --user "$service_identity" -- "$release_python" -c \
-  'import local_inference_gateway' >/dev/null 2>&1 ||
+runuser --user "$service_identity" -- \
+  env -i PATH=/usr/bin:/bin "$release_python" -I -c \
+  'from pathlib import Path
+import local_inference_gateway
+import sys
+
+module_path = Path(local_inference_gateway.__file__).resolve()
+raise SystemExit(not module_path.is_relative_to(Path(sys.prefix).resolve()))' \
+  >/dev/null 2>&1 ||
   fail "service account cannot execute the installed gateway release"
 release_created=false
 

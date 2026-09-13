@@ -62,7 +62,10 @@ def test_systemd_installer_activates_only_complete_clean_revision() -> None:
     assert '"$uv_bin" venv --python "$python_bin" "$release_dir/venv"' in installer
     assert '--python "$release_dir/venv/bin/python"' in installer
     assert '--build-constraints "$build_constraints_file"' in installer
-    assert '[[ -x "$release_executable" ]]' in installer
+    assert (
+        '[[ -x "$release_executable" && -f "$release_executable" && '
+        '! -L "$release_executable" ]]' in installer
+    )
     assert 'release_marker="$release_dir/SOURCE_REVISION"' in installer
     assert '[[ ! -L "$release_dir" ]]' in installer
     assert '-f "$release_marker"' in installer
@@ -72,8 +75,8 @@ def test_systemd_installer_activates_only_complete_clean_revision() -> None:
     assert '[[ "$release_created" == true' in installer
     assert 'ln -s -- "$release_dir/venv" "$temporary_link"' in installer
     assert 'mv -Tf -- "$temporary_link" "$active_venv"' in installer
-    assert installer.index('[[ -x "$release_executable" ]]') < installer.index(
-        'ln -s -- "$release_dir/venv"'
+    assert installer.index('[[ -x "$release_executable" && -f "$release_executable"') < (
+        installer.index('ln -s -- "$release_dir/venv"')
     )
     assert installer.index('if [[ -e "$active_venv"') < installer.index("install -d")
     assert build_constraints.splitlines() == [
@@ -96,11 +99,18 @@ def test_systemd_installer_rejects_incompatible_identity_or_python() -> None:
     assert 'service_gid" == "$service_group_gid"' in installer
     assert 'service_home" == "$state_dir"' in installer
     assert 'service_shell" == "$nologin_shell"' in installer
+    assert 'getent --service=files group "$service_identity"' in installer
+    assert 'getent --service=files passwd "$service_identity"' in installer
+    assert 'id -G "$service_identity"' in installer
     assert 'runuser --user "$service_identity" -- "$python_bin"' in installer
-    assert 'runuser --user "$service_identity" -- "$release_python"' in installer
     assert 'resolved_python="$(readlink -f -- "$python_bin")"' in installer
     assert "/usr/* | /opt/* | /bin/*" in installer
     assert "for the unit sandbox" in installer
+    assert 'validate_root_owned_nonwritable_path "$resolved_python"' in installer
+    assert "stat -Lc '%u %a'" in installer
+    assert 'env -i PATH=/usr/bin:/bin "$release_python" -I -c' in installer
+    assert "local_inference_gateway.__file__" in installer
+    assert "Path(sys.prefix).resolve()" in installer
 
 
 def test_systemd_installer_builds_only_from_captured_revision() -> None:
@@ -112,7 +122,7 @@ def test_systemd_installer_builds_only_from_captured_revision() -> None:
     assert '"$source_dir"\n' in installer
     assert '"$source_dir/deploy/systemd/local-inference-gateway.service"' in installer
     assert 'rm -rf -- "$source_dir"' in installer
-    assert installer.index('runuser --user "$service_identity" -- "$release_python"') < (
+    assert installer.index('env -i PATH=/usr/bin:/bin "$release_python" -I -c') < (
         installer.rindex("release_created=false")
     )
 
@@ -135,8 +145,10 @@ def test_systemd_installer_guards_managed_paths_and_serializes_installation() ->
     assert "! -user root" in installer
     assert "-perm /022" in installer
     assert 'readlink -f -- "$release_python"' in installer
+    assert '! -L "$release_executable"' in installer
+    assert '! -L "$release_marker"' in installer
     assert installer.index("flock --exclusive --nonblock 9") < installer.index(
-        'if ! getent group "$service_identity"'
+        'if ! getent --service=files group "$service_identity"'
     )
     assert installer.index("flock --exclusive --nonblock 9") < installer.index(
         'if [[ -e "$release_dir" ]]'
