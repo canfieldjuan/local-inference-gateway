@@ -62,6 +62,25 @@ validate_root_owned_nonwritable_path() {
   done
 }
 
+validate_release_symlinks() {
+  local release_link resolved_release_link
+
+  while IFS= read -r -d '' release_link; do
+    resolved_release_link="$(readlink -f -- "$release_link")" ||
+      fail "release contains an unresolved symbolic link: $release_link"
+    [[ -e "$resolved_release_link" ]] ||
+      fail "release contains a dangling symbolic link: $release_link"
+    case "$resolved_release_link" in
+      "$release_dir"/*) ;;
+      *)
+        [[ -f "$resolved_release_link" ]] ||
+          fail "release symbolic link targets an external non-file: $release_link"
+        validate_root_owned_nonwritable_path "$resolved_release_link"
+        ;;
+    esac
+  done < <(find "$release_dir" -xdev -type l -print0)
+}
+
 [[ "${EUID:-$(id -u)}" -eq 0 ]] || fail "run this installer as root"
 for command_name in \
   awk chmod env find flock git getent groupadd id install ln mktemp mv readlink rm runuser stat \
@@ -152,6 +171,19 @@ IFS=: read -r service_name _ service_uid service_gid _ service_home service_shel
 [[ "$service_gid" == "$service_group_gid" ]] || fail "service account primary group is incompatible"
 [[ "$service_home" == "$state_dir" ]] || fail "service account home is incompatible"
 [[ "$service_shell" == "$nologin_shell" ]] || fail "service account shell is incompatible"
+
+default_group_record="$(getent group "$service_identity")"
+IFS=: read -r default_group_name _ default_group_gid _ <<<"$default_group_record"
+[[ "$default_group_name" == "$service_group_name" && \
+  "$default_group_gid" == "$service_group_gid" ]] ||
+  fail "default NSS does not select the local service group"
+default_service_record="$(getent passwd "$service_identity")"
+IFS=: read -r default_service_name _ default_service_uid default_service_gid _ \
+  default_service_home default_service_shell <<<"$default_service_record"
+[[ "$default_service_name" == "$service_name" && "$default_service_uid" == "$service_uid" && \
+  "$default_service_gid" == "$service_gid" && "$default_service_home" == "$service_home" && \
+  "$default_service_shell" == "$service_shell" ]] ||
+  fail "default NSS does not select the local service account"
 [[ "$(id -G "$service_identity")" == "$service_group_gid" ]] ||
   fail "service account has supplementary group memberships"
 runuser --user "$service_identity" -- "$python_bin" -c \
@@ -197,6 +229,7 @@ release_violation="$(
     \( ! -user root -o \( \( -type f -o -type d \) -perm /022 \) \) -print -quit
 )"
 [[ -z "$release_violation" ]] || fail "release is not immutable: $release_violation"
+validate_release_symlinks
 resolved_release_python="$(readlink -f -- "$release_python")"
 if [[ "$resolved_release_python" != "$python_bin" && \
   "$resolved_release_python" != "$release_dir"/* ]]; then

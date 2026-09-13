@@ -65,12 +65,14 @@ Verification plan:
 
 ### Acceptance criteria
 
-1. A non-root caller, dirty tracked checkout, missing prerequisite, non-local or supplementary-group
-   service identity, interpreter outside a root-owned non-writable path, inaccessible Python, or
-   regular file/directory at the activation path is rejected before changing the active release.
+1. A non-root caller, dirty tracked checkout, missing prerequisite, non-local, default-NSS-mismatched,
+   or supplementary-group service identity, interpreter outside a root-owned non-writable path,
+   inaccessible Python, or regular file/directory at the activation path is rejected before changing
+   the active release.
 2. The installed release path contains the full source commit identity and is populated completely
    before the active symlink changes.
-3. A rerun for the same clean commit is idempotent and reuses only a valid installed executable.
+3. A rerun for the same clean commit is idempotent and reuses only a valid installed executable whose
+   release symlinks resolve inside the immutable tree or to root-owned non-writable regular files.
 4. The installer creates no secret-bearing file and never reads secret values or application data.
 5. The installer performs daemon reload but contains no service start, stop, restart, enable, or
    disable operation.
@@ -81,14 +83,14 @@ Verification plan:
 
 ### Implementation summary
 
-- `deploy/systemd/install.sh` now requires a local-files-only dedicated identity with no supplementary
-  groups and a service-readable interpreter whose full canonical path is root-owned and non-writable,
-  captures the selected commit into a root-owned snapshot, installs that snapshot with locked runtime
-  and build dependencies into a root-owned commit-addressed release, rejects incomplete, mismatched,
-  mutable, or externally redirected releases, rejects redirected managed paths, serializes installers,
-  flips the active virtual-environment symlink only after an isolated service-user import resolves
-  inside the release environment, installs the snapshot's reviewed unit, and performs only
-  `daemon-reload`.
+- `deploy/systemd/install.sh` now requires a local-files-only dedicated identity selected identically
+  by default NSS with no supplementary groups and a service-readable interpreter whose full canonical
+  path is root-owned and non-writable, captures the selected commit into a root-owned snapshot,
+  installs that snapshot with locked runtime and build dependencies into a root-owned commit-addressed
+  release, rejects incomplete, mismatched, mutable, or externally redirected releases including every
+  unsafe symlink target, rejects redirected managed paths, serializes installers, flips the active
+  virtual-environment symlink only after an isolated service-user import resolves inside the release
+  environment, installs the snapshot's reviewed unit, and performs only `daemon-reload`.
 - `deploy/systemd/build-constraints.txt` pins the complete isolated Hatchling build environment used
   by the installer so one commit-addressed release does not resolve differently over time.
 - `tests/test_deployment.py` now exercises shell syntax and non-root rejection and asserts the clean
@@ -104,8 +106,9 @@ Verification plan:
 - `deploy/systemd/install.sh` defines fixed system paths and fail-closed admission for root,
   prerequisites, absolute executable `uv`/Python paths, a Git checkout, and a clean worktree; it
   creates or validates the local-files-only non-login system identity against the host's regular
-  UID/GID boundary, rejects supplementary group membership, and proves that identity can execute
-  Python only after every canonical interpreter path component is root-owned and non-writable;
+  UID/GID boundary, verifies default NSS selects the same account and group, rejects supplementary
+  group membership, and proves that identity can execute Python only after every canonical interpreter
+  path component is root-owned and non-writable;
   it also rejects symlinked/non-directory private paths before changing their ownership and takes a
   host-wide nonblocking installer lock. This satisfies contract items 1 and 2 and is covered by
   `tests/test_deployment.py` plus `bash -n`.
@@ -113,8 +116,10 @@ Verification plan:
   identity, archive that immutable revision into a private snapshot, reject symlinked/incomplete or
   identity-mismatched releases, install locked runtime and build dependencies at their final path,
   reject release trees that are not root-owned and non-writable by group/other, require the installed
-  entrypoint and revision marker to be regular in-release files rather than symlinks, and prove in an
-  isolated environment that the service identity imports the package from the active release prefix;
+  entrypoint and revision marker to be regular in-release files rather than symlinks, validate every
+  remaining symlink resolves inside the release or to a root-owned non-writable external regular file,
+  and prove in an isolated environment that the service identity imports the package from the active
+  release prefix;
   it retains the incomplete-release cleanup guard through that proof and atomically replaces the
   active symlink afterward. This satisfies contract items 3 and 4 and is covered by
   `tests/test_deployment.py`.
@@ -126,8 +131,10 @@ Verification plan:
 - Verification on the final implementation reported `7 passed, 2 warnings` for the focused
   deployment tests, `202 passed, 1 skipped, 2 warnings` for full pytest, `All checks passed!` for
   Ruff lint, `31 files already formatted`, no mypy issues in 7 source files, 39 locked packages,
-  both wheel and source distribution built, valid Bash syntax, and a clean whitespace diff. A
-  two-sided function probe accepted `/usr/bin/python3.12` and rejected writable `/tmp` ancestry.
+  both wheel and source distribution built, valid Bash syntax, and a clean whitespace diff. Two-sided
+  probes accepted `/usr/bin/python3.12`, an internal release link, and a root-controlled external
+  interpreter link while rejecting writable `/tmp` ancestry and a writable external release target;
+  default and files-only NSS both resolved root to UID 0 on the target host.
 - No untraced runtime, dependency, schema, routing, model, credential, application, or service-state
   change appears in the diff.
 

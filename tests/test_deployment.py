@@ -101,6 +101,10 @@ def test_systemd_installer_rejects_incompatible_identity_or_python() -> None:
     assert 'service_shell" == "$nologin_shell"' in installer
     assert 'getent --service=files group "$service_identity"' in installer
     assert 'getent --service=files passwd "$service_identity"' in installer
+    assert 'default_group_record="$(getent group "$service_identity")"' in installer
+    assert 'default_service_record="$(getent passwd "$service_identity")"' in installer
+    assert 'default_group_gid" == "$service_group_gid"' in installer
+    assert 'default_service_uid" == "$service_uid"' in installer
     assert 'id -G "$service_identity"' in installer
     assert 'runuser --user "$service_identity" -- "$python_bin"' in installer
     assert 'resolved_python="$(readlink -f -- "$python_bin")"' in installer
@@ -147,6 +151,9 @@ def test_systemd_installer_guards_managed_paths_and_serializes_installation() ->
     assert 'readlink -f -- "$release_python"' in installer
     assert '! -L "$release_executable"' in installer
     assert '! -L "$release_marker"' in installer
+    assert 'find "$release_dir" -xdev -type l -print0' in installer
+    assert 'readlink -f -- "$release_link"' in installer
+    assert 'validate_root_owned_nonwritable_path "$resolved_release_link"' in installer
     assert installer.index("flock --exclusive --nonblock 9") < installer.index(
         'if ! getent --service=files group "$service_identity"'
     )
