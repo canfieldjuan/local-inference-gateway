@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -143,6 +144,28 @@ def test_systemd_installer_rejects_incompatible_identity_or_python() -> None:
     assert installer.index('validate_root_owned_nonwritable_path "$trusted_runtime_path"') < (
         installer.index('runuser --user "$service_identity" --')
     )
+
+
+def test_systemd_installer_embedded_runtime_probe_executes() -> None:
+    installer = (ROOT / "deploy" / "systemd" / "install.sh").read_text(encoding="utf-8")
+    match = re.search(
+        r"\npython_runtime_probe='(?P<probe>.*?)'\npython_runtime_paths=",
+        installer,
+        flags=re.DOTALL,
+    )
+
+    assert match is not None
+    probe = subprocess.run(
+        [sys.executable, "-I", "-S", "-c", match.group("probe")],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert probe.returncode == 0, probe.stderr
+    runtime_paths = probe.stdout.splitlines()
+    assert runtime_paths
+    assert all(path.startswith("/") for path in runtime_paths)
 
 
 def test_systemd_installer_builds_only_from_captured_revision() -> None:
