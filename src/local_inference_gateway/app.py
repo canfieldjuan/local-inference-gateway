@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from starlette.concurrency import run_in_threadpool
 
-from .config import Credential, CredentialStore, Settings
+from .config import Credential, CredentialStore, Settings, read_private_token
 from .contracts import (
     PROTOCOL_VERSION,
     AcknowledgementRequest,
@@ -37,8 +37,10 @@ from .store import (
     StoreError,
 )
 from .worker import (
+    FallbackWorker,
     InferenceWorker,
     InvalidWorkerOutput,
+    LMStudioWorker,
     OllamaWorker,
     WorkerOutcomeAmbiguous,
     WorkerUnavailable,
@@ -105,16 +107,17 @@ class GatewayService:
 
     def health(self, credential: Credential) -> dict[str, object]:
         authorized_tasks = sorted(task for task in TASK_POLICIES if task in credential.tasks)
-        available = self.worker.health() if authorized_tasks else False
-        tasks = [
-            {
-                "id": task_id,
-                "version": task_version,
-                "status": "available" if available else "unavailable",
-                "diagnostic_code": "ready" if available else "worker_unavailable",
-            }
-            for task_id, task_version in authorized_tasks
-        ]
+        tasks = []
+        for task_id, task_version in authorized_tasks:
+            available = self.worker.health((task_id, task_version))
+            tasks.append(
+                {
+                    "id": task_id,
+                    "version": task_version,
+                    "status": "available" if available else "unavailable",
+                    "diagnostic_code": "ready" if available else "worker_unavailable",
+                }
+            )
         return {"protocol_version": PROTOCOL_VERSION, "tasks": tasks}
 
     def infer(self, credential: Credential, request: InferenceRequest) -> dict[str, object]:
@@ -382,7 +385,19 @@ def create_app(
     )
     clock = clock or (lambda: datetime.now(UTC))
     store.initialize(clock())
-    worker = worker or OllamaWorker(settings.ollama_base_url, settings.ollama_model)
+    if worker is None:
+        primary = OllamaWorker(settings.ollama_base_url, settings.ollama_model)
+        fallback_settings = settings.lm_studio_fallback
+        if fallback_settings is None:
+            worker = primary
+        else:
+            fallback = LMStudioWorker(
+                fallback_settings.base_url,
+                fallback_settings.model,
+                read_private_token(fallback_settings.token_path, "LM Studio"),
+                fallback_settings.idle_ttl_seconds,
+            )
+            worker = FallbackWorker(primary, fallback, frozenset(TASK_POLICIES))
     service = GatewayService(settings, store, worker, clock)
 
     @asynccontextmanager

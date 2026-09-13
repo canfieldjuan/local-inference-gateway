@@ -11,9 +11,15 @@ from datetime import timedelta
 from fastapi.testclient import TestClient
 
 from local_inference_gateway.app import create_app
+from local_inference_gateway.config import LMStudioFallbackSettings
 from local_inference_gateway.contracts import InferenceRequest
 from local_inference_gateway.store import RequestStore
-from local_inference_gateway.worker import WorkerOutcomeAmbiguous, WorkerUnavailable
+from local_inference_gateway.worker import (
+    FallbackWorker,
+    OllamaWorker,
+    WorkerOutcomeAmbiguous,
+    WorkerUnavailable,
+)
 from tests.conftest import (
     INVOICE_TOKEN,
     OTHER_TOKEN,
@@ -76,6 +82,69 @@ def test_liveness_and_scoped_health_disclose_no_worker_details(gateway) -> None:
     assert "ollama" not in encoded.casefold()
     assert "qwen" not in encoded.casefold()
     assert TOKEN not in encoded and OTHER_TOKEN not in encoded and INVOICE_TOKEN not in encoded
+
+
+def test_health_reports_each_authorized_task_availability_without_worker_identity(gateway) -> None:  # type: ignore[no-untyped-def]
+    gateway.worker.task_health[("email.schedule.extract", 1)] = False
+
+    response = gateway.client.get("/v1/health", headers=gateway.headers)
+
+    assert response.json() == {
+        "protocol_version": 1,
+        "tasks": [
+            {
+                "id": "email.analyze",
+                "version": 1,
+                "status": "available",
+                "diagnostic_code": "ready",
+            },
+            {
+                "id": "email.schedule.extract",
+                "version": 1,
+                "status": "unavailable",
+                "diagnostic_code": "worker_unavailable",
+            },
+        ],
+    }
+    encoded = json.dumps(response.json()).casefold()
+    assert "ollama" not in encoded
+    assert "studio" not in encoded
+    assert "model" not in encoded
+
+
+def test_app_constructs_fallback_router_only_when_explicitly_configured(
+    gateway,
+    tmp_path,  # type: ignore[no-untyped-def]
+) -> None:
+    primary_only_app = create_app(
+        gateway.settings,
+        credentials=gateway.credentials,
+        store=gateway.store,
+        clock=gateway.clock,
+    )
+    assert type(primary_only_app.state.gateway_service.worker) is OllamaWorker
+
+    token = tmp_path / "lm-studio.token"
+    token.write_text("lm-studio-private-test-token-000000", encoding="ascii")
+    token.chmod(0o600)
+    settings = replace(
+        gateway.settings,
+        lm_studio_fallback=LMStudioFallbackSettings(
+            "http://127.0.0.1:1234",
+            "pinned-fallback-model",
+            token,
+            120,
+        ),
+    )
+
+    app = create_app(
+        settings,
+        credentials=gateway.credentials,
+        store=gateway.store,
+        clock=gateway.clock,
+    )
+
+    assert isinstance(app.state.gateway_service.worker, FallbackWorker)
 
 
 def test_scheduling_task_uses_existing_durable_lifecycle(gateway) -> None:  # type: ignore[no-untyped-def]

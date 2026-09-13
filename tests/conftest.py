@@ -42,8 +42,11 @@ class FakeWorker:
         self.error: Exception | None = None
         self.before_return = None
         self.result_content = '{"summary":"private generated result"}'
+        self.task_health: dict[tuple[str, int], bool] = {}
 
-    def health(self) -> bool:
+    def health(self, task: tuple[str, int] | None = None) -> bool:
+        if task is not None and task in self.task_health:
+            return self.task_health[task]
         return self.available
 
     def infer(self, request, timeout_seconds: float) -> WorkerResult:  # type: ignore[no-untyped-def]

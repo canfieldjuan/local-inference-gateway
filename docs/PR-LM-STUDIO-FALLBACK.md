@@ -96,12 +96,44 @@ Verification plan:
 
 ### Implementation summary
 
-NOT DONE.
+- Added an optional, all-or-none `LMStudioFallbackSettings` block with loopback-only URL
+  validation, an exact model identifier, a bounded idle TTL, and an owner-private bearer-token
+  file. With no fallback variables, `create_app` still constructs only `OllamaWorker`.
+- Added `LMStudioWorker` on the existing bounded OpenAI-compatible transport. It authenticates with
+  the configured bearer token and adds the configured JIT `ttl` to each completion request.
+- Added `FallbackWorker` as a pre-dispatch router. Ollama remains primary; fallback is admitted only
+  for published tasks when the primary model is unavailable, Ollama's canonical `/api/ps` response
+  is exactly empty, and LM Studio reports the configured model. No exception after an Ollama infer
+  call can route to LM Studio.
+- Made health checks task-aware while preserving the existing task-only public response. Worker,
+  model, token, and capacity identities remain private to the gateway.
+- Documented the optional appliance configuration and added configuration, boundary, routing,
+  health, and no-post-dispatch-fallback regression coverage.
+- Exercised the existing HTTPS operational proof against the configured LM Studio fallback with a
+  deliberately missing Ollama primary model. All four published tasks completed, replayed, and
+  acknowledged; cross-credential requests were denied; Ollama stayed empty; and LM Studio unloaded
+  the JIT-loaded fallback after its configured TTL.
 
 ### Cold diff audit
 
-NOT DONE.
+- `src/local_inference_gateway/config.py` owns fallback admission configuration and reads the token
+  without following symlinks or accepting a non-private/non-regular file.
+- `src/local_inference_gateway/worker.py` owns runtime selection and shares only payload/result
+  validation. The primary is checked first, the fallback capacity check is fail-closed, and there
+  is no exception handler around primary inference that could trigger a second dispatch.
+- `src/local_inference_gateway/app.py` constructs the router only from a complete optional setting
+  and reports availability per authorized task without adding worker identity to the response.
+- `tests/` independently exercises the allowed and refused sides of configuration, capacity,
+  task eligibility, transport authentication/TTL, task health, and post-primary failure routing.
+- `README.md` is the only operator-facing surface changed. No task, request, result, storage,
+  authorization, replay, acknowledgement, application, or Connect contract changed.
+- Effect trace: the fallback claim is controlled by `FallbackWorker._fallback_ready`; tests prove
+  each prerequisite can independently refuse dispatch, and the live proof reaches LM Studio only
+  after the real Ollama model and residency probes permit it.
 
 ### Gap audit
 
-NOT DONE.
+DONE. The diff implements the contracted optional fallback and operational proof without changing
+application-facing contracts or routing after primary submission. Permanent appliance deployment,
+Windows/signing, other runtimes, remote workers, and semantic model promotion remain deferred as
+declared in non-scope.
