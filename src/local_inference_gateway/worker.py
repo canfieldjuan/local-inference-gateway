@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
+from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol
@@ -57,6 +60,8 @@ class InferenceWorker(Protocol):
         self,
         task: tuple[str, int] | None = None,
         timeout_seconds: float = 5.0,
+        *,
+        cancellation: threading.Event | None = None,
     ) -> bool: ...
 
     def infer(
@@ -65,6 +70,7 @@ class InferenceWorker(Protocol):
         timeout_seconds: float,
         *,
         deadline: float | None = None,
+        cancellation: threading.Event | None = None,
     ) -> WorkerResult: ...
 
 
@@ -77,39 +83,54 @@ class OllamaWorker:
         self,
         task: tuple[str, int] | None = None,
         timeout_seconds: float = 5.0,
+        *,
+        cancellation: threading.Event | None = None,
     ) -> bool:
-        return self.availability(task, timeout_seconds) is WorkerAvailability.AVAILABLE
+        return (
+            self.availability(task, timeout_seconds, cancellation=cancellation)
+            is WorkerAvailability.AVAILABLE
+        )
 
     def availability(
         self,
         task: tuple[str, int] | None = None,
         timeout_seconds: float = 5.0,
+        *,
+        cancellation: threading.Event | None = None,
     ) -> WorkerAvailability:
         del task
         try:
-            return asyncio.run(self._availability(timeout_seconds))
+            return asyncio.run(self._availability(timeout_seconds, cancellation))
         except (TimeoutError, httpx.HTTPError, InvalidWorkerOutput):
             return WorkerAvailability.UNKNOWN
 
-    async def _availability(self, timeout_seconds: float) -> WorkerAvailability:
-        async with asyncio.timeout(timeout_seconds):
-            async with (
-                self._client(timeout_seconds) as client,
-                client.stream("GET", f"{self.base_url}/v1/models") as response,
-            ):
-                if response.status_code != 200:
+    async def _availability(
+        self,
+        timeout_seconds: float,
+        cancellation: threading.Event | None,
+    ) -> WorkerAvailability:
+        async def probe() -> WorkerAvailability:
+            async with asyncio.timeout(timeout_seconds):
+                async with (
+                    self._client(timeout_seconds) as client,
+                    client.stream("GET", f"{self.base_url}/v1/models") as response,
+                ):
+                    if response.status_code != 200:
+                        return WorkerAvailability.UNKNOWN
+                    document = await _bounded_json(response)
+                models = document.get("data")
+                if not isinstance(models, list):
                     return WorkerAvailability.UNKNOWN
-                document = await _bounded_json(response)
-            models = document.get("data")
-            if not isinstance(models, list):
-                return WorkerAvailability.UNKNOWN
-            model_ids: list[str] = []
-            for item in models:
-                if not isinstance(item, dict) or not isinstance(item.get("id"), str):
-                    return WorkerAvailability.UNKNOWN
-                model_ids.append(item["id"])
-            available = self.model in model_ids
-            return WorkerAvailability.AVAILABLE if available else WorkerAvailability.UNAVAILABLE
+                model_ids: list[str] = []
+                for item in models:
+                    if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+                        return WorkerAvailability.UNKNOWN
+                    model_ids.append(item["id"])
+                available = self.model in model_ids
+                return WorkerAvailability.AVAILABLE if available else WorkerAvailability.UNAVAILABLE
+
+        failure = WorkerUnavailable("worker routing cancelled before inference dispatch")
+        return await _run_with_cancellation(probe, cancellation, failure, failure)
 
     def infer(
         self,
@@ -117,55 +138,86 @@ class OllamaWorker:
         timeout_seconds: float,
         *,
         deadline: float | None = None,
+        cancellation: threading.Event | None = None,
     ) -> WorkerResult:
-        return asyncio.run(self._infer(request, timeout_seconds, deadline))
+        return asyncio.run(self._infer(request, timeout_seconds, deadline, cancellation))
 
-    def fallback_capacity_available(self, timeout_seconds: float = 5.0) -> bool:
+    def fallback_capacity_available(
+        self,
+        timeout_seconds: float = 5.0,
+        *,
+        cancellation: threading.Event | None = None,
+    ) -> bool:
         try:
-            return asyncio.run(self._fallback_capacity_available(timeout_seconds))
+            return asyncio.run(self._fallback_capacity_available(timeout_seconds, cancellation))
+        except WorkerUnavailable:
+            raise
         except (TimeoutError, httpx.HTTPError, InvalidWorkerOutput):
             return False
 
-    async def _fallback_capacity_available(self, timeout_seconds: float) -> bool:
-        async with asyncio.timeout(timeout_seconds):
-            async with (
-                self._client(timeout_seconds) as client,
-                client.stream("GET", f"{self.base_url}/api/ps") as response,
-            ):
-                if response.status_code != 200:
-                    return False
-                document = await _bounded_json(response)
-        return document.get("models") == []
+    async def _fallback_capacity_available(
+        self,
+        timeout_seconds: float,
+        cancellation: threading.Event | None,
+    ) -> bool:
+        async def probe() -> bool:
+            async with asyncio.timeout(timeout_seconds):
+                async with (
+                    self._client(timeout_seconds) as client,
+                    client.stream("GET", f"{self.base_url}/api/ps") as response,
+                ):
+                    if response.status_code != 200:
+                        return False
+                    document = await _bounded_json(response)
+            return document.get("models") == []
+
+        failure = WorkerUnavailable("worker routing cancelled before inference dispatch")
+        return await _run_with_cancellation(probe, cancellation, failure, failure)
 
     async def _infer(
         self,
         request: InferenceRequest,
         timeout_seconds: float,
         deadline: float | None,
+        cancellation: threading.Event | None,
     ) -> WorkerResult:
         payload = self._payload(request)
-        try:
-            async with self._client(timeout_seconds) as client:
-                dispatch_timeout = _dispatch_timeout(timeout_seconds, deadline)
-                async with asyncio.timeout(dispatch_timeout):
-                    async with client.stream(
-                        "POST",
-                        f"{self.base_url}/v1/chat/completions",
-                        content=encode_json_bytes(payload),
-                        headers={"Content-Type": "application/json"},
-                    ) as response:
-                        if response.status_code in {404, 429} or 500 <= response.status_code <= 599:
-                            raise WorkerUnavailable("worker rejected admission while unavailable")
-                        if response.status_code >= 400:
-                            raise InvalidWorkerOutput("worker rejected the gateway request")
-                        document = await _bounded_json(response)
-        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
-            raise WorkerUnavailable("worker connection was unavailable") from exc
-        except (WorkerUnavailable, InvalidWorkerOutput):
-            raise
-        except (TimeoutError, httpx.HTTPError) as exc:
-            raise WorkerOutcomeAmbiguous("worker outcome is unknown") from exc
-        return _validated_result(request, document)
+
+        async def submit() -> WorkerResult:
+            try:
+                async with self._client(timeout_seconds) as client:
+                    dispatch_timeout = _dispatch_timeout(timeout_seconds, deadline)
+                    async with asyncio.timeout(dispatch_timeout):
+                        async with client.stream(
+                            "POST",
+                            f"{self.base_url}/v1/chat/completions",
+                            content=encode_json_bytes(payload),
+                            headers={"Content-Type": "application/json"},
+                        ) as response:
+                            if (
+                                response.status_code in {404, 429}
+                                or 500 <= response.status_code <= 599
+                            ):
+                                raise WorkerUnavailable(
+                                    "worker rejected admission while unavailable"
+                                )
+                            if response.status_code >= 400:
+                                raise InvalidWorkerOutput("worker rejected the gateway request")
+                            document = await _bounded_json(response)
+            except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+                raise WorkerUnavailable("worker connection was unavailable") from exc
+            except (WorkerUnavailable, InvalidWorkerOutput):
+                raise
+            except (TimeoutError, httpx.HTTPError) as exc:
+                raise WorkerOutcomeAmbiguous("worker outcome is unknown") from exc
+            return _validated_result(request, document)
+
+        return await _run_with_cancellation(
+            submit,
+            cancellation,
+            WorkerUnavailable("worker request cancelled before dispatch"),
+            WorkerOutcomeAmbiguous("worker outcome is unknown after client disconnect"),
+        )
 
     def _payload(self, request: InferenceRequest) -> dict[str, object]:
         generation = request.generation
@@ -203,8 +255,13 @@ class LMStudioWorker(OllamaWorker):
         self._token = token
         self._idle_ttl_seconds = idle_ttl_seconds
 
-    def fallback_capacity_available(self, timeout_seconds: float = 5.0) -> bool:
-        del timeout_seconds
+    def fallback_capacity_available(
+        self,
+        timeout_seconds: float = 5.0,
+        *,
+        cancellation: threading.Event | None = None,
+    ) -> bool:
+        del timeout_seconds, cancellation
         return False
 
     def _payload(self, request: InferenceRequest) -> dict[str, object]:
@@ -239,14 +296,20 @@ class FallbackWorker:
         self,
         task: tuple[str, int] | None = None,
         timeout_seconds: float = 15.0,
+        *,
+        cancellation: threading.Event | None = None,
     ) -> bool:
         try:
             deadline = time.monotonic() + timeout_seconds
-            availability = self.primary.availability(task, self._remaining(deadline))
+            availability = self.primary.availability(
+                task,
+                self._remaining(deadline),
+                cancellation=cancellation,
+            )
             if availability is WorkerAvailability.AVAILABLE:
                 return True
             return availability is WorkerAvailability.UNAVAILABLE and self._fallback_ready(
-                task, deadline
+                task, deadline, cancellation
             )
         except WorkerUnavailable:
             return False
@@ -257,33 +320,53 @@ class FallbackWorker:
         timeout_seconds: float,
         *,
         deadline: float | None = None,
+        cancellation: threading.Event | None = None,
     ) -> WorkerResult:
         local_deadline = time.monotonic() + timeout_seconds
         deadline = local_deadline if deadline is None else min(deadline, local_deadline)
+        if cancellation is not None and cancellation.is_set():
+            raise WorkerUnavailable("worker request cancelled before dispatch")
         task = (request.task.id, request.task.version)
-        availability = self.primary.availability(task, self._remaining(deadline))
+        availability = self.primary.availability(
+            task,
+            self._remaining(deadline),
+            cancellation=cancellation,
+        )
         if availability is WorkerAvailability.AVAILABLE:
             return self.primary.infer(
                 request,
                 self._remaining(deadline),
                 deadline=deadline,
+                cancellation=cancellation,
             )
         if availability is not WorkerAvailability.UNAVAILABLE or not self._fallback_ready(
-            task, deadline
+            task, deadline, cancellation
         ):
             raise WorkerUnavailable("no worker is safely available before dispatch")
         return self.fallback.infer(
             request,
             self._remaining(deadline),
             deadline=deadline,
+            cancellation=cancellation,
         )
 
-    def _fallback_ready(self, task: tuple[str, int] | None, deadline: float) -> bool:
+    def _fallback_ready(
+        self,
+        task: tuple[str, int] | None,
+        deadline: float,
+        cancellation: threading.Event | None = None,
+    ) -> bool:
         if task is None or task not in self.eligible_tasks:
             return False
-        if not self.primary.fallback_capacity_available(self._remaining(deadline)):
+        if not self.primary.fallback_capacity_available(
+            self._remaining(deadline), cancellation=cancellation
+        ):
             return False
-        return self.fallback.health(task, self._remaining(deadline))
+        return self.fallback.health(
+            task,
+            self._remaining(deadline),
+            cancellation=cancellation,
+        )
 
     @staticmethod
     def _remaining(deadline: float) -> float:
@@ -291,6 +374,38 @@ class FallbackWorker:
         if remaining <= 0:
             raise WorkerUnavailable("worker routing deadline expired before dispatch")
         return remaining
+
+
+async def _wait_for_cancellation(cancellation: threading.Event) -> None:
+    while not cancellation.is_set():
+        await asyncio.sleep(0.01)
+
+
+async def _run_with_cancellation[T](
+    operation: Callable[[], Awaitable[T]],
+    cancellation: threading.Event | None,
+    before_dispatch: WorkerError,
+    after_dispatch: WorkerError,
+) -> T:
+    if cancellation is None:
+        return await operation()
+    if cancellation.is_set():
+        raise before_dispatch
+
+    in_flight = asyncio.ensure_future(operation())
+    cancelled = asyncio.create_task(_wait_for_cancellation(cancellation))
+    try:
+        done, _ = await asyncio.wait({in_flight, cancelled}, return_when=asyncio.FIRST_COMPLETED)
+        if in_flight in done:
+            return in_flight.result()
+        in_flight.cancel()
+        with suppress(asyncio.CancelledError):
+            await in_flight
+        raise after_dispatch
+    finally:
+        cancelled.cancel()
+        with suppress(asyncio.CancelledError):
+            await cancelled
 
 
 def _validated_result(request: InferenceRequest, document: dict[str, object]) -> WorkerResult:

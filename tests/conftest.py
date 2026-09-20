@@ -48,8 +48,10 @@ class FakeWorker:
         self,
         task: tuple[str, int] | None = None,
         timeout_seconds: float = 5.0,
+        *,
+        cancellation: threading.Event | None = None,
     ) -> bool:
-        del timeout_seconds
+        del timeout_seconds, cancellation
         if task is not None and task in self.task_health:
             return self.task_health[task]
         return self.available
@@ -60,8 +62,9 @@ class FakeWorker:
         timeout_seconds: float,
         *,
         deadline: float | None = None,
+        cancellation: threading.Event | None = None,
     ) -> WorkerResult:
-        del request, timeout_seconds, deadline
+        del request, timeout_seconds, deadline, cancellation
         self.calls += 1
         self.started.set()
         if not self.release.wait(5):
