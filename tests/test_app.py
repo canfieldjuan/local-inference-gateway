@@ -671,6 +671,106 @@ def test_downstream_disconnect_cancels_worker_and_releases_lane(tmp_path) -> Non
     assert worker.calls == 2
 
 
+def test_original_disconnect_keeps_shared_inference_for_connected_exact_retry(
+    tmp_path, monkeypatch
+) -> None:  # type: ignore[no-untyped-def]
+    class SharedAttemptWorker(FakeWorker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.cancellation_observed = threading.Event()
+            self.force_release = threading.Event()
+
+        def infer(  # type: ignore[no-untyped-def]
+            self,
+            request,
+            timeout_seconds: float,
+            *,
+            deadline: float | None = None,
+            cancellation: threading.Event | None = None,
+        ) -> WorkerResult:
+            del request, timeout_seconds, deadline
+            self.calls += 1
+            self.started.set()
+            while not self.force_release.wait(0.01):
+                if cancellation is not None and cancellation.is_set():
+                    self.cancellation_observed.set()
+                    raise WorkerOutcomeAmbiguous("downstream client disconnected")
+            return WorkerResult("application/json", self.result_content)
+
+    worker = SharedAttemptWorker()
+    gateway = build_harness(tmp_path, worker=worker)
+    body = json.dumps(gateway.request(), separators=(",", ":")).encode()
+    disconnect_ready = asyncio.Event()
+    received_body = False
+    sent: list[dict[str, object]] = []
+    retry_joined = threading.Event()
+    service = gateway.client.app.state.gateway_service
+    wait_and_reload = service._wait_and_reload
+
+    def observed_wait_and_reload(*args, **kwargs):  # type: ignore[no-untyped-def]
+        retry_joined.set()
+        return wait_and_reload(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_wait_and_reload", observed_wait_and_reload)
+
+    async def receive() -> dict[str, object]:
+        nonlocal received_body
+        if not received_body:
+            received_body = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        if disconnect_ready.is_set():
+            return {"type": "http.disconnect"}
+        await asyncio.sleep(3_600)
+        raise AssertionError("unreachable")
+
+    async def send(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/inference",
+        "raw_path": b"/v1/inference",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"testserver"),
+            (b"authorization", gateway.headers["Authorization"].encode("ascii")),
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode("ascii")),
+        ],
+        "client": ("127.0.0.1", 50000),
+        "server": ("testserver", 80),
+    }
+
+    async def disconnect_original_after_retry_joins():  # type: ignore[no-untyped-def]
+        original = asyncio.create_task(gateway.client.app(scope, receive, send))
+        assert await asyncio.to_thread(worker.started.wait, 1)
+        retry = asyncio.create_task(
+            asyncio.to_thread(
+                gateway.client.post,
+                "/v1/inference",
+                headers=gateway.headers,
+                json=gateway.request(),
+            )
+        )
+        assert await asyncio.to_thread(retry_joined.wait, 1)
+        disconnect_ready.set()
+        cancellation_observed = await asyncio.to_thread(worker.cancellation_observed.wait, 0.3)
+        worker.force_release.set()
+        retry_response = await asyncio.wait_for(retry, 1)
+        await asyncio.wait_for(original, 1)
+        return cancellation_observed, retry_response
+
+    cancellation_observed, retry_response = asyncio.run(disconnect_original_after_retry_joins())
+    assert not cancellation_observed
+    assert retry_response.status_code == 200
+    assert worker.calls == 1
+
+
 def test_expiry_boundaries_fail_before_dispatch(gateway) -> None:  # type: ignore[no-untyped-def]
     past = gateway.request(
         request_expires_at=(gateway.clock() - timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")

@@ -88,6 +88,35 @@ class GatewayFailure(RuntimeError):
 class _ActiveAttempt:
     request_id: str
     finished: threading.Event
+    cancellation: _AttemptCancellation
+
+
+class _AttemptCancellation(threading.Event):
+    def __init__(self) -> None:
+        super().__init__()
+        self._clients_lock = threading.Lock()
+        self._clients: set[threading.Event] = set()
+
+    def register(self, cancellation: threading.Event | None) -> threading.Event | None:
+        client = cancellation or threading.Event()
+        with self._clients_lock:
+            if super().is_set():
+                return None
+            self._clients.add(client)
+        return client
+
+    def unregister(self, client: threading.Event) -> None:
+        with self._clients_lock:
+            self._clients.discard(client)
+
+    def is_set(self) -> bool:
+        with self._clients_lock:
+            if super().is_set():
+                return True
+            if self._clients and all(client.is_set() for client in self._clients):
+                super().set()
+                return True
+            return False
 
 
 class GatewayService:
@@ -145,7 +174,7 @@ class GatewayService:
         if response is not None:
             return response
         if record.state == "in_progress":
-            return self._join_active(record, credential, digest)
+            return self._join_active(record, credential, digest, cancellation)
         if record.state == "ambiguous":
             raise GatewayFailure("inference_timeout", True, 504, self.settings.retry_after_seconds)
         if record.state != "reserved":
@@ -154,9 +183,14 @@ class GatewayService:
         active, owner = self._claim_lane(record.request_id)
         if not owner:
             if active.request_id == record.request_id:
-                return self._wait_and_reload(active, credential, digest, request.expires_at)
+                return self._wait_and_reload(
+                    active, credential, digest, request.expires_at, cancellation
+                )
             raise GatewayFailure("capacity_limited", True, 429, self.settings.retry_after_seconds)
 
+        client_cancellation = active.cancellation.register(cancellation)
+        if client_cancellation is None:
+            raise GatewayFailure("inference_timeout", True, 504, self.settings.retry_after_seconds)
         attempt_id = str(uuid.uuid4())
         try:
             current = self.clock()
@@ -178,7 +212,7 @@ class GatewayService:
                 max(0.001, (request.expires_at - dispatch_at).total_seconds()),
             )
             try:
-                result = self.worker.infer(request, timeout, cancellation=cancellation)
+                result = self.worker.infer(request, timeout, cancellation=active.cancellation)
             except WorkerUnavailable as exc:
                 self.store.reset_reserved(record.request_id, attempt_id, self.clock())
                 raise GatewayFailure(
@@ -229,6 +263,7 @@ class GatewayService:
                 "inference_timeout", True, 504, self.settings.retry_after_seconds
             ) from exc
         finally:
+            active.cancellation.unregister(client_cancellation)
             self._release_lane(active)
 
     def acknowledge(
@@ -324,7 +359,7 @@ class GatewayService:
     def _claim_lane(self, request_id: str) -> tuple[_ActiveAttempt, bool]:
         with self._lane_lock:
             if self._active is None:
-                self._active = _ActiveAttempt(request_id, threading.Event())
+                self._active = _ActiveAttempt(request_id, threading.Event(), _AttemptCancellation())
                 return self._active, True
             return self._active, False
 
@@ -335,13 +370,17 @@ class GatewayService:
                 self._active = None
 
     def _join_active(
-        self, record: RequestRecord, credential: Credential, digest: str
+        self,
+        record: RequestRecord,
+        credential: Credential,
+        digest: str,
+        cancellation: threading.Event | None = None,
     ) -> dict[str, object]:
         with self._lane_lock:
             active = self._active
         if active is None or active.request_id != record.request_id:
             return self._reload_after_attempt(record.request_id, credential, digest)
-        return self._wait_and_reload(active, credential, digest, record.expires_at)
+        return self._wait_and_reload(active, credential, digest, record.expires_at, cancellation)
 
     def _wait_and_reload(
         self,
@@ -349,14 +388,22 @@ class GatewayService:
         credential: Credential,
         digest: str,
         expires_at: datetime,
+        cancellation: threading.Event | None = None,
     ) -> dict[str, object]:
-        remaining = min(
-            self.settings.worker_timeout_seconds + 1,
-            max(0.001, (expires_at - self.clock()).total_seconds()),
-        )
-        if not active.finished.wait(remaining):
-            raise GatewayFailure("inference_timeout", True, 504, self.settings.retry_after_seconds)
-        return self._reload_after_attempt(active.request_id, credential, digest)
+        client_cancellation = active.cancellation.register(cancellation)
+        try:
+            remaining = min(
+                self.settings.worker_timeout_seconds + 1,
+                max(0.001, (expires_at - self.clock()).total_seconds()),
+            )
+            if not active.finished.wait(remaining):
+                raise GatewayFailure(
+                    "inference_timeout", True, 504, self.settings.retry_after_seconds
+                )
+            return self._reload_after_attempt(active.request_id, credential, digest)
+        finally:
+            if client_cancellation is not None:
+                active.cancellation.unregister(client_cancellation)
 
     def _reload_after_attempt(
         self,
