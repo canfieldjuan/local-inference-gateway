@@ -120,7 +120,12 @@ class GatewayService:
             )
         return {"protocol_version": PROTOCOL_VERSION, "tasks": tasks}
 
-    def infer(self, credential: Credential, request: InferenceRequest) -> dict[str, object]:
+    def infer(
+        self,
+        credential: Credential,
+        request: InferenceRequest,
+        cancellation: threading.Event | None = None,
+    ) -> dict[str, object]:
         now = self.clock()
         self._validate_policy(credential, request, now)
         digest = request.canonical_digest()
@@ -173,7 +178,7 @@ class GatewayService:
                 max(0.001, (request.expires_at - dispatch_at).total_seconds()),
             )
             try:
-                result = self.worker.infer(request, timeout)
+                result = self.worker.infer(request, timeout, cancellation=cancellation)
             except WorkerUnavailable as exc:
                 self.store.reset_reserved(record.request_id, attempt_id, self.clock())
                 raise GatewayFailure(
@@ -444,7 +449,7 @@ def create_app(
             document = await _bounded_document(request, settings.request_max_bytes)
             request_id = safe_request_id(document.get("request_id"))
             parsed = InferenceRequest.model_validate(document)
-            result = await run_in_threadpool(service.infer, credential, parsed)
+            result = await _infer_until_disconnect(request, service, credential, parsed)
             return JSONResponse(result)
         except GatewayFailure as failure:
             return _failure_response(request_id, failure)
@@ -493,6 +498,35 @@ async def _run_maintenance(
             # Cleanup is retried on the next bounded interval. Request paths also
             # continue to run the same transactional cleanup before state changes.
             continue
+
+
+async def _infer_until_disconnect(
+    request: Request,
+    service: GatewayService,
+    credential: Credential,
+    parsed: InferenceRequest,
+) -> dict[str, object]:
+    cancellation = threading.Event()
+    inference = asyncio.create_task(
+        run_in_threadpool(service.infer, credential, parsed, cancellation)
+    )
+    disconnect = asyncio.create_task(_wait_for_disconnect(request))
+    try:
+        done, _ = await asyncio.wait({inference, disconnect}, return_when=asyncio.FIRST_COMPLETED)
+        if inference in done:
+            return inference.result()
+        cancellation.set()
+        return await inference
+    finally:
+        cancellation.set()
+        disconnect.cancel()
+        with suppress(asyncio.CancelledError):
+            await disconnect
+
+
+async def _wait_for_disconnect(request: Request) -> None:
+    while not await request.is_disconnected():
+        await asyncio.sleep(0.01)
 
 
 def _authenticate(request: Request, credentials: CredentialStore) -> Credential | None:

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import pytest
@@ -53,7 +55,10 @@ class StubWorker:
         self,
         task: tuple[str, int] | None = None,
         timeout_seconds: float = 5.0,
+        *,
+        cancellation: threading.Event | None = None,
     ) -> bool:
+        del cancellation
         self.health_calls.append(task)
         self.health_timeouts.append(timeout_seconds)
         return self.available
@@ -64,8 +69,9 @@ class StubWorker:
         timeout_seconds: float,
         *,
         deadline: float | None = None,
+        cancellation: threading.Event | None = None,
     ) -> WorkerResult:
-        del request
+        del request, cancellation
         self.infer_calls += 1
         self.infer_timeouts.append(timeout_seconds)
         self.infer_deadlines.append(deadline)
@@ -96,11 +102,20 @@ class StubPrimary(StubWorker):
         self,
         task: tuple[str, int] | None = None,
         timeout_seconds: float = 5.0,
+        *,
+        cancellation: threading.Event | None = None,
     ) -> WorkerAvailability:
+        del cancellation
         self.availability_calls.append((task, timeout_seconds))
         return self.availability_state
 
-    def fallback_capacity_available(self, timeout_seconds: float = 5.0) -> bool:
+    def fallback_capacity_available(
+        self,
+        timeout_seconds: float = 5.0,
+        *,
+        cancellation: threading.Event | None = None,
+    ) -> bool:
+        del cancellation
         self.capacity_calls += 1
         self.capacity_timeouts.append(timeout_seconds)
         return self.capacity_available
@@ -657,6 +672,21 @@ class _PeriodicNeverEndingStream(httpx.AsyncByteStream):
             yield b" "
 
 
+class _DisconnectTrackedStream(httpx.AsyncByteStream):
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.closed = threading.Event()
+
+    async def __aiter__(self):  # type: ignore[no-untyped-def]
+        self.started.set()
+        while True:
+            await asyncio.sleep(0.005)
+            yield b" "
+
+    async def aclose(self) -> None:
+        self.closed.set()
+
+
 def test_worker_enforces_absolute_deadline_while_bytes_arrive(gateway) -> None:  # type: ignore[no-untyped-def]
     worker = worker_with_handler(
         lambda request: httpx.Response(200, stream=_PeriodicNeverEndingStream())
@@ -667,3 +697,42 @@ def test_worker_enforces_absolute_deadline_while_bytes_arrive(gateway) -> None: 
         worker.infer(InferenceRequest.model_validate(gateway.request()), 0.03)
 
     assert time.monotonic() - started < 1.0
+
+
+def test_worker_disconnect_cancellation_closes_upstream_stream(gateway) -> None:  # type: ignore[no-untyped-def]
+    stream = _DisconnectTrackedStream()
+    worker = worker_with_handler(lambda request: httpx.Response(200, stream=stream))
+    cancellation = threading.Event()
+    request = InferenceRequest.model_validate(gateway.request())
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        inference = pool.submit(worker.infer, request, 30, cancellation=cancellation)
+        assert stream.started.wait(1)
+        cancellation.set()
+        with pytest.raises(WorkerOutcomeAmbiguous, match="client disconnect"):
+            inference.result(timeout=1)
+
+    assert stream.closed.wait(1)
+
+
+def test_fallback_routing_disconnect_closes_pre_dispatch_probe(gateway) -> None:  # type: ignore[no-untyped-def]
+    stream = _DisconnectTrackedStream()
+    primary = worker_with_handler(lambda request: httpx.Response(200, stream=stream))
+    fallback = StubWorker(available=True, result='{"worker":"fallback"}')
+    router = FallbackWorker(
+        primary,
+        fallback,
+        frozenset({("email.analyze", 1)}),
+    )
+    cancellation = threading.Event()
+    request = InferenceRequest.model_validate(gateway.request())
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        inference = pool.submit(router.infer, request, 30, cancellation=cancellation)
+        assert stream.started.wait(1)
+        cancellation.set()
+        with pytest.raises(WorkerUnavailable, match="routing cancelled"):
+            inference.result(timeout=1)
+
+    assert stream.closed.wait(1)
+    assert fallback.infer_calls == 0

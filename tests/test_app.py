@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
@@ -18,6 +20,7 @@ from local_inference_gateway.worker import (
     FallbackWorker,
     OllamaWorker,
     WorkerOutcomeAmbiguous,
+    WorkerResult,
     WorkerUnavailable,
 )
 from tests.conftest import (
@@ -575,6 +578,97 @@ def test_durable_and_worker_admission_are_bounded(tmp_path) -> None:  # type: ig
         "retry_after_seconds": 15,
     }
     assert gateway.worker.calls == 1
+
+
+def test_downstream_disconnect_cancels_worker_and_releases_lane(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    class DisconnectAwareWorker(FakeWorker):
+        def __init__(self) -> None:
+            super().__init__()
+            self.cancellation_observed = threading.Event()
+            self.force_release = threading.Event()
+
+        def infer(  # type: ignore[no-untyped-def]
+            self,
+            request,
+            timeout_seconds: float,
+            *,
+            deadline: float | None = None,
+            cancellation: threading.Event | None = None,
+        ) -> WorkerResult:
+            del request, timeout_seconds, deadline
+            self.calls += 1
+            self.started.set()
+            if self.calls == 1:
+                while not self.force_release.wait(0.01):
+                    if cancellation is not None and cancellation.is_set():
+                        self.cancellation_observed.set()
+                        break
+                raise WorkerOutcomeAmbiguous("downstream client disconnected")
+            return WorkerResult("application/json", self.result_content)
+
+    worker = DisconnectAwareWorker()
+    gateway = build_harness(tmp_path, worker=worker)
+    body = json.dumps(gateway.request(), separators=(",", ":")).encode()
+    disconnect_ready = asyncio.Event()
+    received_body = False
+    sent: list[dict[str, object]] = []
+
+    async def receive() -> dict[str, object]:
+        nonlocal received_body
+        if not received_body:
+            received_body = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        if disconnect_ready.is_set():
+            return {"type": "http.disconnect"}
+        await asyncio.sleep(3_600)
+        raise AssertionError("unreachable")
+
+    async def send(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/inference",
+        "raw_path": b"/v1/inference",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"testserver"),
+            (b"authorization", gateway.headers["Authorization"].encode("ascii")),
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode("ascii")),
+        ],
+        "client": ("127.0.0.1", 50000),
+        "server": ("testserver", 80),
+    }
+
+    async def disconnect_request() -> bool:
+        request_task = asyncio.create_task(gateway.client.app(scope, receive, send))
+        assert await asyncio.to_thread(worker.started.wait, 1)
+        disconnect_ready.set()
+        cancellation_observed = await asyncio.to_thread(worker.cancellation_observed.wait, 0.3)
+        worker.force_release.set()
+        await asyncio.wait_for(request_task, 1)
+        return cancellation_observed
+
+    cancellation_observed = asyncio.run(disconnect_request())
+    assert cancellation_observed
+
+    exact_retry = gateway.client.post(
+        "/v1/inference", headers=gateway.headers, json=gateway.request()
+    )
+    assert exact_retry.status_code == 504
+    assert exact_retry.json()["error"]["code"] == "inference_timeout"
+    assert worker.calls == 1
+
+    next_request = gateway.request(request_id="22345678-1234-4234-8234-123456789abc")
+    next_response = gateway.client.post("/v1/inference", headers=gateway.headers, json=next_request)
+    assert next_response.status_code == 200
+    assert worker.calls == 2
 
 
 def test_expiry_boundaries_fail_before_dispatch(gateway) -> None:  # type: ignore[no-untyped-def]
