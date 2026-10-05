@@ -15,6 +15,9 @@ PROTOCOL_VERSION = 1
 MAX_REQUEST_BYTES = 1_000_000
 MAX_MESSAGE_CHARS = 500_000
 MAX_SCHEMA_BYTES = 250_000
+DOCUMENT_TASK_V2 = ("document.summary.step", 2)
+DOCUMENT_CONTEXT_TOKENS = 32_768
+DOCUMENT_MAX_OUTPUT_TOKENS = 4_096
 MAX_JSON_DEPTH = 32
 MAX_JSON_NODES = 20_000
 MAX_SCHEMA_ENUM_VALUES = 100
@@ -52,6 +55,20 @@ SUPPORTED_SCHEMA_KEYWORDS = frozenset(
 )
 UUID_V4_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 RFC3339_UTC_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+
+def required_context_tokens(task: tuple[str, int] | None) -> int:
+    return DOCUMENT_CONTEXT_TOKENS if task == DOCUMENT_TASK_V2 else 0
+
+
+def document_task_profile() -> dict[str, object]:
+    return {
+        "version": 1,
+        "context_tokens": DOCUMENT_CONTEXT_TOKENS,
+        "max_output_tokens": DOCUMENT_MAX_OUTPUT_TOKENS,
+        "max_schema_bytes": MAX_SCHEMA_BYTES,
+        "schema_features": ["bounded_source_passages_v1"],
+    }
 
 
 def _validate_protocol_version(value: int) -> int:

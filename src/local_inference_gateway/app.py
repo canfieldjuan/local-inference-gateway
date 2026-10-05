@@ -16,9 +16,12 @@ from starlette.concurrency import run_in_threadpool
 
 from .config import Credential, CredentialStore, Settings, read_private_token
 from .contracts import (
+    DOCUMENT_MAX_OUTPUT_TOKENS,
+    DOCUMENT_TASK_V2,
     PROTOCOL_VERSION,
     AcknowledgementRequest,
     InferenceRequest,
+    document_task_profile,
     is_bounded_root_object_choice,
     parse_json_object,
     safe_request_id,
@@ -62,12 +65,12 @@ TASK_POLICIES = MappingProxyType(
     {
         ("document.summary.step", 1): TaskPolicy(
             temperature=0.0,
-            max_output_tokens=4_096,
+            max_output_tokens=DOCUMENT_MAX_OUTPUT_TOKENS,
             allow_root_object_choice=True,
         ),
-        ("document.summary.step", 2): TaskPolicy(
+        DOCUMENT_TASK_V2: TaskPolicy(
             temperature=0.0,
-            max_output_tokens=4_096,
+            max_output_tokens=DOCUMENT_MAX_OUTPUT_TOKENS,
             allow_root_object_choice=True,
             allow_passage_definitions=True,
         ),
@@ -127,6 +130,20 @@ class GatewayService:
                 }
             )
         return {"protocol_version": PROTOCOL_VERSION, "tasks": tasks}
+
+    def task_profile(self, credential: Credential, task: tuple[str, int]) -> dict[str, object]:
+        if task not in credential.tasks:
+            raise GatewayFailure("forbidden", False, 403)
+        if task != DOCUMENT_TASK_V2:
+            raise GatewayFailure("unsupported_task", False, 404)
+        available = self.worker.health(task)
+        return {
+            "protocol_version": PROTOCOL_VERSION,
+            "task": {"id": task[0], "version": task[1]},
+            "profile": document_task_profile(),
+            "status": "available" if available else "unavailable",
+            "diagnostic_code": "ready" if available else "worker_unavailable",
+        }
 
     def infer(self, credential: Credential, request: InferenceRequest) -> dict[str, object]:
         now = self.clock()
@@ -446,6 +463,16 @@ def create_app(
         if credential is None:
             return _generic_auth_failure()
         return JSONResponse(service.health(credential))
+
+    @app.get("/v1/tasks/{task_id}/{task_version}/profile")
+    def task_profile(request: Request, task_id: str, task_version: int) -> JSONResponse:
+        credential = _authenticate(request, credentials)
+        if credential is None:
+            return _generic_auth_failure()
+        try:
+            return JSONResponse(service.task_profile(credential, (task_id, task_version)))
+        except GatewayFailure as failure:
+            return _failure_response(None, failure)
 
     @app.post("/v1/inference")
     async def inference(request: Request) -> JSONResponse:
