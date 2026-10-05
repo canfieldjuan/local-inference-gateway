@@ -13,11 +13,13 @@ from jsonschema.exceptions import SchemaError, ValidationError
 
 from .contracts import (
     InferenceRequest,
+    decoder_schema,
     encode_json_bytes,
     normalize_json_numbers,
     parse_exact_json_decimal,
     parse_json_integer,
     parse_json_object_pairs,
+    uses_passage_definitions,
 )
 
 MAX_WORKER_RESPONSE_BYTES = 1_000_000
@@ -151,7 +153,12 @@ class OllamaWorker:
                     async with client.stream(
                         "POST",
                         f"{self.base_url}/v1/chat/completions",
-                        content=encode_json_bytes(payload),
+                        content=encode_json_bytes(
+                            payload,
+                            sort_keys=not uses_passage_definitions(
+                                request.generation.response_schema
+                            ),
+                        ),
                         headers={"Content-Type": "application/json"},
                     ) as response:
                         if response.status_code in {404, 429} or 500 <= response.status_code <= 599:
@@ -180,7 +187,7 @@ class OllamaWorker:
                 "json_schema": {
                     "name": request.task.id.replace(".", "_") + f"_v{request.task.version}",
                     "strict": True,
-                    "schema": generation.response_schema,
+                    "schema": decoder_schema(generation.response_schema),
                 },
             },
         }

@@ -20,6 +20,12 @@ MAX_JSON_NODES = 20_000
 MAX_SCHEMA_ENUM_VALUES = 100
 MAX_SCHEMA_ARRAY_ITEMS = 100
 MAX_SCHEMA_OBJECT_CHOICES = 64
+MAX_PASSAGE_DEFINITIONS = 2
+MAX_PASSAGE_ENUM_VALUES = 8192
+MAX_PASSAGE_CHARACTERS = 240
+MAX_PASSAGE_REFERENCES = 16
+MAX_PASSAGE_VALUES = 32
+PASSAGE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 MAX_OUTPUT_TOKENS = 12_288
 MAX_FINITE_BINARY64 = Decimal("1.7976931348623157e308")
 SUPPORTED_SCHEMA_TYPES = frozenset(
@@ -111,7 +117,15 @@ class Generation(ContractModel):
         if len(schema_bytes) > MAX_SCHEMA_BYTES:
             raise ValueError("response_schema exceeds its byte limit")
         _validate_json_shape(self.response_schema)
-        _validate_supported_schema(self.response_schema, allow_root_object_choice=True)
+        definitions = _passage_definitions(self.response_schema)
+        root = {key: value for key, value in self.response_schema.items() if key != "$defs"}
+        _validate_supported_schema(
+            root,
+            allow_root_object_choice=True,
+            definitions=definitions,
+            references=[0, 0],
+            multiplicity=1,
+        )
         try:
             Draft202012Validator.check_schema(self.response_schema)
         except SchemaError as exc:
@@ -195,12 +209,100 @@ def _validate_json_shape(value: object) -> None:
             stack.extend((item, depth + 1) for item in current)
 
 
+def uses_passage_definitions(schema: dict[str, Any]) -> bool:
+    return "$defs" in schema
+
+
+def _passage_definitions(schema: dict[str, Any]) -> dict[str, Any] | None:
+    if not uses_passage_definitions(schema):
+        return None
+    definitions = schema["$defs"]
+    if (
+        schema.get("type") != "object"
+        or not isinstance(definitions, dict)
+        or not 1 <= len(definitions) <= MAX_PASSAGE_DEFINITIONS
+    ):
+        raise ValueError("response_schema requires bounded root passage definitions")
+    for name, definition in definitions.items():
+        if not isinstance(name, str) or PASSAGE_NAME_RE.fullmatch(name) is None:
+            raise ValueError("response_schema passage name must be an ASCII identifier")
+        if (
+            not isinstance(definition, dict)
+            or set(definition) != {"type", "enum"}
+            or definition["type"] != "string"
+        ):
+            raise ValueError("response_schema passage definitions must be string-enum leaves")
+        values = definition["enum"]
+        if (
+            not isinstance(values, list)
+            or not 1 <= len(values) <= MAX_PASSAGE_ENUM_VALUES
+            or any(
+                not isinstance(value, str) or not 1 <= len(value) <= MAX_PASSAGE_CHARACTERS
+                for value in values
+            )
+            or len(set(values)) != len(values)
+        ):
+            raise ValueError("response_schema passage enum must contain bounded unique strings")
+    return definitions
+
+
+def decoder_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Derive decoder order from admitted required arrays, never input key order."""
+    if not uses_passage_definitions(schema):
+        return schema
+
+    def ordered(value: Any, *, schema_node: bool = False) -> Any:
+        if isinstance(value, list):
+            return [ordered(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        result: dict[str, Any] = {}
+        for key in sorted(value):
+            if schema_node and key in {"properties", "$defs"}:
+                fields = value[key]
+                required = value.get("required", []) if key == "properties" else []
+                keys = dict.fromkeys([*required, *sorted(fields)])
+                result[key] = {
+                    name: ordered(fields[name], schema_node=True) for name in keys if name in fields
+                }
+            elif schema_node and key == "items":
+                result[key] = ordered(value[key], schema_node=True)
+            elif schema_node and key == "anyOf":
+                result[key] = [ordered(branch, schema_node=True) for branch in value[key]]
+            else:
+                # Annotations/default values are data, even when keys resemble schemas.
+                result[key] = ordered(value[key])
+        return result
+
+    result: dict[str, Any] = ordered(schema, schema_node=True)
+    return result
+
+
 def _validate_supported_schema(
     schema: dict[str, Any],
     *,
+    definitions: dict[str, Any] | None,
+    references: list[int],
+    multiplicity: int,
     allow_nullable_any_of: bool = True,
     allow_root_object_choice: bool = False,
 ) -> None:
+    if "$ref" in schema and definitions is not None:
+        reference = schema["$ref"]
+        if (
+            set(schema) != {"$ref"}
+            or not isinstance(reference, str)
+            or not reference.startswith("#/$defs/")
+            or reference[len("#/$defs/") :] not in definitions
+        ):
+            raise ValueError("response_schema reference must select one owned passage definition")
+        references[0] += 1
+        if references[0] > MAX_PASSAGE_REFERENCES:
+            raise ValueError("response_schema exceeds its passage reference limit")
+        references[1] += multiplicity
+        if references[1] > MAX_PASSAGE_VALUES:
+            raise ValueError("response_schema exceeds its passage comparison budget")
+        return
     unsupported = set(schema) - SUPPORTED_SCHEMA_KEYWORDS
     if unsupported:
         raise ValueError(f"response_schema uses unsupported keyword {sorted(unsupported)[0]!r}")
@@ -214,7 +316,13 @@ def _validate_supported_schema(
         for child in properties.values():
             if not isinstance(child, dict):
                 raise ValueError("response_schema properties must contain schemas")
-            _validate_supported_schema(child, allow_nullable_any_of=allow_nullable_any_of)
+            _validate_supported_schema(
+                child,
+                allow_nullable_any_of=allow_nullable_any_of,
+                definitions=definitions,
+                references=references,
+                multiplicity=multiplicity,
+            )
     additional = schema.get("additionalProperties")
     if additional is not None and not isinstance(additional, bool):
         raise ValueError("response_schema additionalProperties must be boolean")
@@ -230,7 +338,13 @@ def _validate_supported_schema(
             type(min_items) is not int or not 0 <= min_items <= max_items
         ):
             raise ValueError("response_schema array minItems is invalid")
-        _validate_supported_schema(item_schema, allow_nullable_any_of=allow_nullable_any_of)
+        _validate_supported_schema(
+            item_schema,
+            allow_nullable_any_of=allow_nullable_any_of,
+            definitions=definitions,
+            references=references,
+            multiplicity=multiplicity * max_items,
+        )
     elif item_schema is not None or min_items is not None or max_items is not None:
         raise ValueError("response_schema array keywords require array type")
     enum = schema.get("enum")
@@ -256,7 +370,9 @@ def _validate_supported_schema(
                 "response_schema root choice must contain 2 through 64 closed object branches"
             )
         for child in alternatives:
-            _validate_supported_schema(child)
+            _validate_supported_schema(
+                child, definitions=definitions, references=references, multiplicity=multiplicity
+            )
         return
     if not allow_nullable_any_of or not isinstance(alternatives, list) or len(alternatives) != 2:
         raise ValueError("response_schema anyOf must be one bounded nullable union")
@@ -270,7 +386,13 @@ def _validate_supported_schema(
     for child in alternatives:
         if not isinstance(child, dict):
             raise ValueError("response_schema anyOf must contain schemas")
-        _validate_supported_schema(child, allow_nullable_any_of=False)
+        _validate_supported_schema(
+            child,
+            allow_nullable_any_of=False,
+            definitions=definitions,
+            references=references,
+            multiplicity=multiplicity,
+        )
 
 
 def is_bounded_root_object_choice(schema: dict[str, Any]) -> bool:
@@ -336,11 +458,11 @@ def normalize_json_numbers(value: Any) -> Any:
     return value
 
 
-def encode_json_bytes(value: Any) -> bytes:
-    return _encode_json(value).encode("utf-8")
+def encode_json_bytes(value: Any, *, sort_keys: bool = True) -> bytes:
+    return _encode_json(value, sort_keys=sort_keys).encode("utf-8")
 
 
-def _encode_json(value: Any) -> str:
+def _encode_json(value: Any, *, sort_keys: bool) -> str:
     if value is None:
         return "null"
     if type(value) is bool:
@@ -350,15 +472,17 @@ def _encode_json(value: Any) -> str:
     if isinstance(value, str):
         return json.dumps(value, ensure_ascii=False)
     if isinstance(value, list):
-        return "[" + ",".join(_encode_json(item) for item in value) + "]"
+        return "[" + ",".join(_encode_json(item, sort_keys=sort_keys) for item in value) + "]"
     if isinstance(value, dict):
         if any(not isinstance(key, str) for key in value):
             raise ValueError("JSON object keys must be strings")
         return (
             "{"
             + ",".join(
-                json.dumps(key, ensure_ascii=False) + ":" + _encode_json(value[key])
-                for key in sorted(value)
+                json.dumps(key, ensure_ascii=False)
+                + ":"
+                + _encode_json(value[key], sort_keys=sort_keys)
+                for key in (sorted(value) if sort_keys else value)
             )
             + "}"
         )

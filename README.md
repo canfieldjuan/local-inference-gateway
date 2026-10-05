@@ -5,7 +5,8 @@ versioned task; the gateway owns worker selection and model identity. This keeps
 independent of Ollama, LM Studio, GPU placement, and future runtime changes.
 
 Current milestone: authenticated, durable `email.analyze@1`, `email.schedule.extract@1`,
-`document.summary.step@1`, and `invoice.extract.batch@1` lifecycles backed by Ollama, with an
+`document.summary.step@1`, opt-in `document.summary.step@2`, and `invoice.extract.batch@1`
+lifecycles backed by Ollama, with an
 explicit TLS-only private-LAN listener for a single-process Linux appliance. An optional
 authenticated LM Studio worker can handle an eligible request only when the gateway proves before
 dispatch that the configured Ollama model is unavailable and Ollama reports no resident model.
@@ -34,7 +35,10 @@ remain deferred.
   and one non-nested nullable `anyOf`. The document task additionally admits one root `anyOf` with
   2 through 64 closed object branches. References, nested object choices, open branches, tuple or
   unbounded arrays, regex patterns, and open-ended combinators are rejected before worker dispatch
-  so validation cannot monopolize the worker lane.
+  so validation cannot monopolize the worker lane. Explicit `document.summary.step@2`
+  credentials additionally admit [bounded shared passage definitions](docs/PR-SOURCE-PASSAGE-SCHEMA.md).
+  Version 1 grants do not gain version 2. Its decoder field order follows required
+  arrays; canonical request identity remains unchanged.
 - Output-token admission is task-specific: the Email Watcher tasks remain capped at 1,500, the
   document summary step at 4,096, and an invoice extraction batch at 12,288. Raising the parser's
   global ceiling does not grant a credential more capacity for another task.
@@ -386,6 +390,42 @@ RUN_OLLAMA_SMOKE=1 \
 GATEWAY_OLLAMA_MODEL=qwen3-30b-a3b:latest \
 uv run pytest -q -m live tests/test_live_ollama.py
 ```
+
+### Retained source-passage transport proof
+
+The opt-in passage proof submits four retained synthetic/public requests through an isolated
+in-process gateway to the real loopback Ollama worker. It exercises schema admission, worker
+serialization and output validation, encrypted replay, and acknowledgement. It does not deploy
+version 2, grant it to an installed client, or qualify the model's semantic fidelity.
+
+Use the deployment's observed model identity. If its configuration is unavailable, an authorized
+synthetic version-1 request followed by Ollama's `/api/ps` can identify the resident worker only
+when there were no resident models before submission and an exclusive inference lock prevents
+other work. Acknowledge that probe normally. Multiple resident models or a failed/ambiguous
+request do not establish identity; retain the receipts and stop without submitting a new retry.
+
+Before running, freeze the exact source commit, input hashes and settings hash; hold the shared
+inference lock and check that no other GPU workload is active. Each input file named
+`request-*.json` contains `decoder_schema_json`, `max_output_tokens`, `seed`, `system_prompt`, and
+`user_prompt`; exactly four are required. Preserve the original decoder bytes and prompts.
+
+```bash
+umask 077
+export RUN_PASSAGE_GATEWAY_PROOF=1
+export PASSAGE_PROOF_REQUESTS=/private/path/retained-requests
+export PASSAGE_PROOF_OUTPUT=/private/path/fresh-proof
+export PASSAGE_PROOF_WORKER_URL=http://127.0.0.1:11434
+export PASSAGE_PROOF_MODEL=EXACT_OBSERVED_MODEL
+export PASSAGE_PROOF_LOCK=/private/path/shared-inference.lock
+install -d -m 700 "$PASSAGE_PROOF_OUTPUT"
+flock -n "$PASSAGE_PROOF_LOCK" uv run pytest -q -s -m live tests/test_live_passages.py \
+  > "$PASSAGE_PROOF_OUTPUT/proof.log" 2>&1
+```
+
+Use a fresh output directory outside worktrees. The test retains private raw worker requests,
+responses, gateway receipts and metadata-only `results.json`; files must remain owner-readable
+only. It runs each input once and retains failures. Compare source, inputs and settings against
+the freeze afterward. Do not tune prompts, relax validation, or retry model failures until green.
 
 ### Operational HTTPS proof
 

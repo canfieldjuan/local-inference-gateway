@@ -22,6 +22,7 @@ from .contracts import (
     is_bounded_root_object_choice,
     parse_json_object,
     safe_request_id,
+    uses_passage_definitions,
 )
 from .store import (
     AcknowledgementConflict,
@@ -54,6 +55,7 @@ class TaskPolicy:
     temperature: float
     max_output_tokens: int
     allow_root_object_choice: bool = False
+    allow_passage_definitions: bool = False
 
 
 TASK_POLICIES = MappingProxyType(
@@ -62,6 +64,12 @@ TASK_POLICIES = MappingProxyType(
             temperature=0.0,
             max_output_tokens=4_096,
             allow_root_object_choice=True,
+        ),
+        ("document.summary.step", 2): TaskPolicy(
+            temperature=0.0,
+            max_output_tokens=4_096,
+            allow_root_object_choice=True,
+            allow_passage_definitions=True,
         ),
         ("email.analyze", 1): TaskPolicy(temperature=0.1, max_output_tokens=1_500),
         ("email.schedule.extract", 1): TaskPolicy(
@@ -272,6 +280,11 @@ class GatewayService:
         if request.generation.temperature != policy.temperature:
             raise GatewayFailure("unsupported_task", False, 422)
         if request.requirements.max_output_tokens > policy.max_output_tokens:
+            raise GatewayFailure("unsupported_task", False, 422)
+        if (
+            uses_passage_definitions(request.generation.response_schema)
+            and not policy.allow_passage_definitions
+        ):
             raise GatewayFailure("unsupported_task", False, 422)
         if (
             is_bounded_root_object_choice(request.generation.response_schema)
