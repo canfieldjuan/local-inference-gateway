@@ -34,7 +34,10 @@ remain deferred.
   and one non-nested nullable `anyOf`. The document task additionally admits one root `anyOf` with
   2 through 64 closed object branches. References, nested object choices, open branches, tuple or
   unbounded arrays, regex patterns, and open-ended combinators are rejected before worker dispatch
-  so validation cannot monopolize the worker lane.
+  so validation cannot monopolize the worker lane. Explicit `document.summary.step@2`
+  credentials additionally admit [bounded shared passage definitions](docs/PR-SOURCE-PASSAGE-SCHEMA.md).
+  Version 1 grants do not gain version 2. Its decoder field order follows required
+  arrays; canonical request identity remains unchanged.
 - Output-token admission is task-specific: the Email Watcher tasks remain capped at 1,500, the
   document summary step at 4,096, and an invoice extraction batch at 12,288. Raising the parser's
   global ceiling does not grant a credential more capacity for another task.

@@ -1,5 +1,8 @@
 # Bounded Document Summary Step Task Policy
 
+This records version 1. The opt-in version 2 schema capability is defined in
+[Bounded source-passage schema support](PR-SOURCE-PASSAGE-SCHEMA.md).
+
 ### Contract
 
 Root cause:

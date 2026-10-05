@@ -23,7 +23,9 @@ different ordering policies; changing canonical identity would break replay.
   leaves, each with 1..8192 nonempty strings of at most 240 characters. Definition
   names are ASCII identifiers of at most 64 characters. References are exact
   single-key local `#/$defs/name` nodes; no siblings, chains, cycles, nested
-  definitions or external resolution. At most 16 reference nodes. All definitions,
+  definitions or external resolution. At most 16 reference nodes and 32 maximum
+  passage values in one generated object, accounting for the product of every
+  enclosing array's maxItems and summing properties/alternative branches. All definitions,
   including unused definitions, must pass validation. Existing schema byte,
   depth, total-node and ordinary inline-enum limits still apply.
 - `app.py`: add `document.summary.step@2` with an explicit shared-passage policy,
@@ -72,6 +74,16 @@ it must not trigger relaxed parsing, prompt tuning or repeated attempts until pa
    raw outputs outside worktrees with owner-only permissions; log metadata only.
 6. Cold diff and boundary/effect audit, then publish for independent review.
    Deployment, coordinated DocSum app proof and unseen fidelity remain separate.
+
+### Admission revision: array multiplication
+
+The first bounded-leaf implementation admitted nested arrays with 8 by 8
+passage references. The regression failed because no ValidationError was raised.
+Leaf-only references prevent graph recursion, but do not alone bound repeated
+large-enum validation. The same schema traversal now carries array multiplicity
+and enforces a total of 32 possible passage values, sufficient for C9's four
+dimensions with two lists of four spans. No downstream output filter substitutes
+for this origin admission bound.
 
 ## Implementation summary
 
