@@ -19,7 +19,7 @@ different ordering policies; changing canonical identity would break replay.
 ### Required change surface
 
 - `contracts.py`: one owner for bounded shared-passage validation and decoder
-  schema ordering. Permit root-only `$defs` with one or two named string-enum
+  schema ordering. Permit `$defs` only on an explicit object root, with one or two named string-enum
   leaves, each with 1..8192 nonempty strings of at most 240 characters. Definition
   names are ASCII identifiers of at most 64 characters. References are exact
   single-key local `#/$defs/name` nodes; no siblings, chains, cycles, nested
@@ -87,12 +87,84 @@ for this origin admission bound.
 
 ## Implementation summary
 
-Pending implementation.
+Implementation commit `89434d1977a23a33897577f70b301ca73b313af5` adds the explicit
+version-2 policy, bounded shared leaf definitions, and required-field decoder
+ordering. Request digest serialization, output validation, installed credentials,
+service configuration and DocSum's version-1 fallback remain unchanged.
+
+### Reproduce, isolate, explain, fix, prove, prevent regression
+
+1. **Reproduce:** the minimal admission test rejected a valid shared schema on
+   unsupported `$defs`; the wire test received alphabetical properties instead
+   of its required sequence. Both failed before the origin changes.
+2. **Isolate:** `Generation.validate_generation_shape` owns admission;
+   `OllamaWorker._infer` owns the final worker bytes. The fixtures need no client
+   documents and reproduce the two independent boundaries.
+3. **Explain:** the previous schema subset intentionally had no reference support;
+   the transport reused canonical identity sorting for an ordered decoder schema.
+   These predate this slice. This is not a model-label repair.
+4. **Fix:** shared definitions are validated once at admission, then exact local
+   references consume that validated mapping. The worker derives order from the
+   admitted required arrays and preserves it through the final encoder. No enum
+   clipping, inlining, downstream rescan or schema bypass is added. There are no
+   earlier gateway passage-specific patches to remove; the generic admission and
+   serialization owners are changed directly.
+5. **Prove:** the final local gate reports **220 passed, 2 skipped**, Ruff lint and
+   format pass, mypy passes for 7 source files, and sdist/wheel build succeeds.
+   All four retained C9 schemas are admitted with exact frozen decoder-byte
+   parity. Local Python is 3.13.11; CI covers the configured 3.12 environment.
+   The real-worker proof is prepared but unrun because another application owns
+   the GPU. Local success is not a live transport or semantic qualification.
+6. **Prevent regression:** public minimal tests cover admission, final wire
+   order, definitions/references and all new bounds, authorization before durable
+   work, concurrent exact replay, changed-schema collision, expiry, ACK cleanup,
+   and rejection of foreign passage output by the actual worker validator.
+
+During implementation, three defects in the new code were caught locally:
+missing array multiplication, a nullable branch losing that count, and annotation
+data being treated as schemas. Their failing evidence is retained and each has a
+regression. The mock stream fixture and a static type annotation were also
+corrected. No published follow-up rounds were needed for these local findings.
+
+### Boundary and effect evidence
+
+`boundary-probe: valid large enums and exact cap values pass; empty, mixed,
+falsy, over-cap, dangling/external/cyclic/sibling references and unauthorized
+task versions fail; nested array/object/nullable paths retain the comparison
+budget; worker output consumes the admitted schema and rejects foreign text.`
+
+`effect-trace: admit C9 passage schemas and preserve evidence-before-relation
+order | Generation admission plus OllamaWorker final serialization | minimal
+fail-before/pass-after regressions and four retained decoder-byte matches.`
+
+The proof procedure is in README's retained source-passage transport section.
+Frozen qualification must not be presented as model promotion or application
+cutover. Evidence aliases and SHA-256 receipts are published in the PR; raw
+prompts and outputs remain private outside worktrees.
 
 ## Cold diff audit
 
-Pending final diff and evidence.
+- `app.py:54,68,285`: explicit policy capability and pre-admission rejection;
+  exact grants, no-effects rejection and health/lifecycle tests cover it.
+- `contracts.py:111,216,249,281,461`: shared-leaf bounds, recursive comparison
+  budget and separate decoder order; admission/boundary/annotation/identity
+  regressions cover these owners. Ordinary schemas retain their existing limits.
+- `worker.py:153,187`: use the admitted ordering policy at final serialization;
+  actual HTTP payload and foreign-output tests cover both directions.
+- `tests/test_passage_schema.py:25`: public minimal and sibling boundary tests.
+- `tests/test_live_passages.py:94`: opt-in real-worker path, private receipts,
+  replay and ACK; skipped until the exclusive GPU lane is available.
+- `README.md`: capability and operational proof instructions only.
+- `docs/PR-DOCUMENT-SUMMARY-TASK-POLICY.md:3`: historical version-1 scope and link.
+- This contract records the new capability, resource revision, evidence and limits.
+
+No dependency, deployment, credential, database, client, prompt, model, or unrelated
+PR25 changes appear in the diff. This implementation audit is not an independent
+PR review.
 
 ## Gap audit
 
-NOT DONE. Implementation, tests, live transport proof and review remain.
+NOT DONE. Real-worker transport proof, remote CI and independent exact-head review
+remain. The implementation is ready for a draft PR while GPU ownership is pending.
+Installed deployment, client negotiation/cutover, full-document app proof and
+unseen fidelity are subsequent gates; DocSum PR116 remains held.
