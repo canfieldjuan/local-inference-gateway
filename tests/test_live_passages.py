@@ -44,9 +44,12 @@ class RetainedTransport(httpx.AsyncBaseTransport):
         self.ordinal = ordinal
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        if request.method == "POST":
+        inference = request.url.path == "/v1/chat/completions"
+        if inference:
             (self.output / f"worker-request-{self.ordinal}.json").write_bytes(request.content)
         response = await self.inner.handle_async_request(request)
+        if not inference:
+            return response
         assert isinstance(response.stream, httpx.AsyncByteStream)
         return httpx.Response(
             response.status_code,
@@ -127,6 +130,14 @@ def test_live_passage_gateway_admission_replay_and_ack() -> None:
     with TestClient(
         create_app(settings, credentials=CredentialStore((credential,)), store=store, worker=worker)
     ) as client:
+        profile = client.get(
+            "/v1/tasks/document.summary.step/2/profile",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert profile.status_code == 200
+        assert profile.json()["profile"]["context_tokens"] == 32768
+        assert profile.json()["status"] == "available"
+        (output / "task-profile.json").write_text(json.dumps(profile.json(), indent=2) + "\n")
         for path in requests:
             raw = json.loads(path.read_text())
             schema = json.loads(raw["decoder_schema_json"])

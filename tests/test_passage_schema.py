@@ -409,7 +409,14 @@ def test_foreign_passage_output_fails_actual_worker_validator(gateway: Any) -> N
 
     request = admitted_request(gateway, passage_schema(1))
 
-    def handler(_: httpx.Request) -> httpx.Response:
+    def handler(http_request: httpx.Request) -> httpx.Response:
+        if http_request.url.path in {"/api/show", "/api/ps"}:
+            metadata = (
+                {"parameters": "num_ctx 32768"}
+                if http_request.url.path == "/api/show"
+                else {"models": []}
+            )
+            return httpx.Response(200, stream=httpx.ByteStream(json.dumps(metadata).encode()))
         document = {
             "choices": [
                 {

@@ -19,11 +19,13 @@ from .contracts import (
     parse_exact_json_decimal,
     parse_json_integer,
     parse_json_object_pairs,
+    required_context_tokens,
     uses_passage_definitions,
 )
 
 MAX_WORKER_RESPONSE_BYTES = 1_000_000
 MAX_OUTPUT_CONTENT_BYTES = 750_000
+MAX_WORKER_CONTEXT_TOKENS = 1_048_576
 
 
 class WorkerError(RuntimeError):
@@ -87,31 +89,86 @@ class OllamaWorker:
         task: tuple[str, int] | None = None,
         timeout_seconds: float = 5.0,
     ) -> WorkerAvailability:
-        del task
         try:
-            return asyncio.run(self._availability(timeout_seconds))
+            return asyncio.run(self._availability(timeout_seconds, required_context_tokens(task)))
         except (TimeoutError, httpx.HTTPError, InvalidWorkerOutput):
             return WorkerAvailability.UNKNOWN
 
-    async def _availability(self, timeout_seconds: float) -> WorkerAvailability:
+    async def _availability(
+        self, timeout_seconds: float, minimum_context: int
+    ) -> WorkerAvailability:
         async with asyncio.timeout(timeout_seconds):
-            async with (
-                self._client(timeout_seconds) as client,
-                client.stream("GET", f"{self.base_url}/v1/models") as response,
-            ):
-                if response.status_code != 200:
+            async with self._client(timeout_seconds) as client:
+                async with client.stream("GET", f"{self.base_url}/v1/models") as response:
+                    if response.status_code != 200:
+                        return WorkerAvailability.UNKNOWN
+                    document = await _bounded_json(response)
+                models = document.get("data")
+                if not isinstance(models, list):
                     return WorkerAvailability.UNKNOWN
-                document = await _bounded_json(response)
-            models = document.get("data")
-            if not isinstance(models, list):
+                model_ids: list[str] = []
+                for item in models:
+                    if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+                        return WorkerAvailability.UNKNOWN
+                    model_ids.append(item["id"])
+                if self.model not in model_ids:
+                    return WorkerAvailability.UNAVAILABLE
+                return await self._context_availability(client, minimum_context)
+
+    async def _context_availability(
+        self, client: httpx.AsyncClient, minimum: int
+    ) -> WorkerAvailability:
+        if minimum == 0:
+            return WorkerAvailability.AVAILABLE
+        async with client.stream(
+            "POST", f"{self.base_url}/api/show", json={"model": self.model}
+        ) as response:
+            if response.status_code != 200:
                 return WorkerAvailability.UNKNOWN
-            model_ids: list[str] = []
-            for item in models:
-                if not isinstance(item, dict) or not isinstance(item.get("id"), str):
-                    return WorkerAvailability.UNKNOWN
-                model_ids.append(item["id"])
-            available = self.model in model_ids
-            return WorkerAvailability.AVAILABLE if available else WorkerAvailability.UNAVAILABLE
+            configuration = await _bounded_json(response)
+        parameters = configuration.get("parameters")
+        if not isinstance(parameters, str):
+            return WorkerAvailability.UNKNOWN
+        settings = [line.split() for line in parameters.splitlines() if line.strip()]
+        contexts = [fields for fields in settings if fields[0] == "num_ctx"]
+        if (
+            len(contexts) != 1
+            or len(contexts[0]) != 2
+            or not contexts[0][1].isascii()
+            or not contexts[0][1].isdigit()
+            or len(contexts[0][1]) > 7
+        ):
+            return WorkerAvailability.UNKNOWN
+        configured = int(contexts[0][1])
+        if not 1 <= configured <= MAX_WORKER_CONTEXT_TOKENS:
+            return WorkerAvailability.UNKNOWN
+        if configured < minimum:
+            return WorkerAvailability.UNAVAILABLE
+        async with client.stream("GET", f"{self.base_url}/api/ps") as response:
+            if response.status_code != 200:
+                return WorkerAvailability.UNKNOWN
+            resident = await _bounded_json(response)
+        models = resident.get("models")
+        if not isinstance(models, list):
+            return WorkerAvailability.UNKNOWN
+        matched = False
+        for item in models:
+            if not isinstance(item, dict):
+                return WorkerAvailability.UNKNOWN
+            identities = [item[key] for key in ("name", "model") if key in item]
+            if not identities or any(not isinstance(v, str) or not v for v in identities):
+                return WorkerAvailability.UNKNOWN
+            if self.model not in identities:
+                continue
+            if matched or any(value != self.model for value in identities):
+                return WorkerAvailability.UNKNOWN
+            matched = True
+            context = item.get("context_length")
+            if type(context) is not int or not 1 <= context <= MAX_WORKER_CONTEXT_TOKENS:
+                return WorkerAvailability.UNKNOWN
+            if context < minimum:
+                return WorkerAvailability.UNAVAILABLE
+        return WorkerAvailability.AVAILABLE
 
     def infer(
         self,
@@ -146,10 +203,18 @@ class OllamaWorker:
         deadline: float | None,
     ) -> WorkerResult:
         payload = self._payload(request)
+        submitted = False
         try:
             async with self._client(timeout_seconds) as client:
                 dispatch_timeout = _dispatch_timeout(timeout_seconds, deadline)
                 async with asyncio.timeout(dispatch_timeout):
+                    capacity = await self._context_availability(
+                        client,
+                        required_context_tokens((request.task.id, request.task.version)),
+                    )
+                    if capacity is not WorkerAvailability.AVAILABLE:
+                        raise WorkerUnavailable("worker task context capacity is not established")
+                    submitted = True
                     async with client.stream(
                         "POST",
                         f"{self.base_url}/v1/chat/completions",
@@ -168,9 +233,15 @@ class OllamaWorker:
                         document = await _bounded_json(response)
         except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
             raise WorkerUnavailable("worker connection was unavailable") from exc
-        except (WorkerUnavailable, InvalidWorkerOutput):
+        except InvalidWorkerOutput as exc:
+            if not submitted:
+                raise WorkerUnavailable("worker capacity check failed before dispatch") from exc
+            raise
+        except WorkerUnavailable:
             raise
         except (TimeoutError, httpx.HTTPError) as exc:
+            if not submitted:
+                raise WorkerUnavailable("worker capacity check failed before dispatch") from exc
             raise WorkerOutcomeAmbiguous("worker outcome is unknown") from exc
         return _validated_result(request, document)
 
@@ -209,6 +280,12 @@ class LMStudioWorker(OllamaWorker):
         super().__init__(base_url, model)
         self._token = token
         self._idle_ttl_seconds = idle_ttl_seconds
+
+    async def _context_availability(
+        self, client: httpx.AsyncClient, minimum: int
+    ) -> WorkerAvailability:
+        # This worker has no verified capacity contract for the extended document task.
+        return WorkerAvailability.UNAVAILABLE if minimum else WorkerAvailability.AVAILABLE
 
     def fallback_capacity_available(self, timeout_seconds: float = 5.0) -> bool:
         del timeout_seconds
