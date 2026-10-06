@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 import httpx
+import pytest
 
 from local_inference_gateway.contracts import InferenceRequest
 from tests.test_worker import worker_with_handler
@@ -94,7 +95,7 @@ def test_passage_boundaries_and_ordinary_enum_limit(gateway: Any) -> None:
     for count in [0, 8193]:
         with pytest.raises(ValidationError, match="bounded unique strings"):
             admitted_request(gateway, passage_schema(count))
-    for value in [0, False, None, "", [], {}, "x" * 241]:
+    for value in [0, False, None, "", [], {}, "x" * 4097]:
         schema = passage_schema(1)
         schema["$defs"]["passage"]["enum"] = [value]
         with pytest.raises(ValidationError):
@@ -360,13 +361,16 @@ def test_new_task_requires_its_own_grant_and_old_tasks_keep_their_policy(
     )
 
 
-def test_passage_task_concurrent_replay_collision_and_ack(gateway: Any) -> None:
+@pytest.mark.parametrize("root_choice", [False, True])
+def test_passage_task_concurrent_replay_collision_and_ack(gateway: Any, root_choice: bool) -> None:
     from concurrent.futures import ThreadPoolExecutor
     from copy import deepcopy
 
-    request = admitted_request(gateway, passage_schema(1)).model_dump(
-        mode="json", exclude_none=True
-    )
+    schema = passage_schema(1)
+    if root_choice:
+        definitions = schema.pop("$defs")
+        schema = {"$defs": definitions, "anyOf": [schema, deepcopy(schema)]}
+    request = admitted_request(gateway, schema).model_dump(mode="json", exclude_none=True)
     request["requirements"]["max_output_tokens"] = 4096
     gateway.worker.result_content = '{"z_source":"value-0","a_relation":"preserved"}'
     gateway.worker.release.clear()

@@ -25,7 +25,7 @@ MAX_SCHEMA_ARRAY_ITEMS = 100
 MAX_SCHEMA_OBJECT_CHOICES = 64
 MAX_PASSAGE_DEFINITIONS = 2
 MAX_PASSAGE_ENUM_VALUES = 8192
-MAX_PASSAGE_CHARACTERS = 240
+MAX_PASSAGE_CHARACTERS = 4096
 MAX_PASSAGE_REFERENCES = 16
 MAX_PASSAGE_VALUES = 32
 PASSAGE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
@@ -136,13 +136,15 @@ class Generation(ContractModel):
         _validate_json_shape(self.response_schema)
         definitions = _passage_definitions(self.response_schema)
         root = {key: value for key, value in self.response_schema.items() if key != "$defs"}
-        _validate_supported_schema(
+        passage_values = _validate_supported_schema(
             root,
             allow_root_object_choice=True,
             definitions=definitions,
-            references=[0, 0],
+            references=[0],
             multiplicity=1,
         )
+        if passage_values > MAX_PASSAGE_VALUES:
+            raise ValueError("response_schema exceeds its passage comparison budget")
         try:
             Draft202012Validator.check_schema(self.response_schema)
         except SchemaError as exc:
@@ -235,7 +237,7 @@ def _passage_definitions(schema: dict[str, Any]) -> dict[str, Any] | None:
         return None
     definitions = schema["$defs"]
     if (
-        schema.get("type") != "object"
+        (schema.get("type") != "object" and not is_bounded_root_object_choice(schema))
         or not isinstance(definitions, dict)
         or not 1 <= len(definitions) <= MAX_PASSAGE_DEFINITIONS
     ):
@@ -303,7 +305,7 @@ def _validate_supported_schema(
     multiplicity: int,
     allow_nullable_any_of: bool = True,
     allow_root_object_choice: bool = False,
-) -> None:
+) -> int:
     if "$ref" in schema and definitions is not None:
         reference = schema["$ref"]
         if (
@@ -316,10 +318,8 @@ def _validate_supported_schema(
         references[0] += 1
         if references[0] > MAX_PASSAGE_REFERENCES:
             raise ValueError("response_schema exceeds its passage reference limit")
-        references[1] += multiplicity
-        if references[1] > MAX_PASSAGE_VALUES:
-            raise ValueError("response_schema exceeds its passage comparison budget")
-        return
+        return multiplicity
+    passage_values = 0
     unsupported = set(schema) - SUPPORTED_SCHEMA_KEYWORDS
     if unsupported:
         raise ValueError(f"response_schema uses unsupported keyword {sorted(unsupported)[0]!r}")
@@ -333,7 +333,7 @@ def _validate_supported_schema(
         for child in properties.values():
             if not isinstance(child, dict):
                 raise ValueError("response_schema properties must contain schemas")
-            _validate_supported_schema(
+            passage_values += _validate_supported_schema(
                 child,
                 allow_nullable_any_of=allow_nullable_any_of,
                 definitions=definitions,
@@ -355,7 +355,7 @@ def _validate_supported_schema(
             type(min_items) is not int or not 0 <= min_items <= max_items
         ):
             raise ValueError("response_schema array minItems is invalid")
-        _validate_supported_schema(
+        passage_values += _validate_supported_schema(
             item_schema,
             allow_nullable_any_of=allow_nullable_any_of,
             definitions=definitions,
@@ -377,7 +377,7 @@ def _validate_supported_schema(
             raise ValueError("response_schema numeric bounds must be integers")
     alternatives = schema.get("anyOf")
     if alternatives is None:
-        return
+        return passage_values
     if allow_root_object_choice and (
         not isinstance(alternatives, list)
         or not any(item == {"type": "null"} for item in alternatives)
@@ -386,11 +386,13 @@ def _validate_supported_schema(
             raise ValueError(
                 "response_schema root choice must contain 2 through 64 closed object branches"
             )
-        for child in alternatives:
+        # Count every physical reference, but only the largest possible output branch.
+        return passage_values + max(
             _validate_supported_schema(
                 child, definitions=definitions, references=references, multiplicity=multiplicity
             )
-        return
+            for child in alternatives
+        )
     if not allow_nullable_any_of or not isinstance(alternatives, list) or len(alternatives) != 2:
         raise ValueError("response_schema anyOf must be one bounded nullable union")
     null_branches = [item for item in alternatives if item == {"type": "null"}]
@@ -400,22 +402,26 @@ def _validate_supported_schema(
     branch_type = non_null_branch.get("type") if isinstance(non_null_branch, dict) else None
     if not isinstance(branch_type, str) or branch_type == "null":
         raise ValueError("response_schema anyOf must contain one typed non-null branch")
+    branch_values = []
     for child in alternatives:
         if not isinstance(child, dict):
             raise ValueError("response_schema anyOf must contain schemas")
-        _validate_supported_schema(
-            child,
-            allow_nullable_any_of=False,
-            definitions=definitions,
-            references=references,
-            multiplicity=multiplicity,
+        branch_values.append(
+            _validate_supported_schema(
+                child,
+                allow_nullable_any_of=False,
+                definitions=definitions,
+                references=references,
+                multiplicity=multiplicity,
+            )
         )
+    return passage_values + max(branch_values)
 
 
 def is_bounded_root_object_choice(schema: dict[str, Any]) -> bool:
     alternatives = schema.get("anyOf")
     return (
-        set(schema) == {"anyOf"}
+        set(schema) - {"$defs"} == {"anyOf"}
         and isinstance(alternatives, list)
         and 2 <= len(alternatives) <= MAX_SCHEMA_OBJECT_CHOICES
         and all(

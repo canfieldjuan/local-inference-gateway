@@ -276,23 +276,97 @@ unproven under this gateway revision until their gates actually run.
 
 ## Implementation summary
 
-Only this proposed contract is added. No gateway or DocSum runtime/test source,
-installed configuration, model, credential or PR state is changed by drafting it.
-The existing candidate and all failed-run evidence remain preserved.
+The accepted gateway changes are implemented locally. `contracts.py` returns
+compositional passage costs, validates shared definitions with the same root
+choice predicate consumed by the task-policy gate, and changes the passage cap
+to 4096. `app.py` increments task policy version to 2. The obsolete mutable
+passage counter, object-only definitions prerequisite and raw-root-only choice
+classification are replaced at their owners. No compensating client filters or
+schema rewrites are added. Worker, storage, installer and DocSum source are
+unchanged; their existing failure behavior is exercised by new integration tests.
+
+### Reproduce, isolate, explain, fix, prove, prevent regression
+
+1. Reproduce: at acceptance commit `30d4156028ff557f55ac834392be578f74bbe695`,
+   the three declared regressions failed on bounded root definitions, the
+   passage comparison budget and the 241-character passage enum respectively.
+2. Isolate: public minimal fixtures target `Generation` and the recursive
+   schema validator. The isolated alternatives fixture reaches the counting
+   owner despite the separate root-admission defect.
+3. Explain: the shared counter reported 64 selections for two exclusive
+   32-selection branches. The object-only definitions prerequisite and the
+   root-only-key check could not compose; the explicit 240-character cap
+   rejected whole pieces. These restrictions came from the earlier gateway
+   passage implementation in this arc; they are replaced, not worked around.
+4. Fix: return subtree cost, sum simultaneous properties, multiply enclosing
+   arrays and take the largest alternative. Keep physical reference counting
+   global and validate every branch/definition. Admit shared root definitions
+   via the common choice predicate and change only the per-passage length cap.
+5. Prove: the original three regressions pass. The full local gate reports
+   **283 passed, 2 skipped**; Ruff lint/format, strict mypy, package build and
+   diff checks pass. The frozen actual C9 schema admits with unchanged decoder
+   bytes; all 80 saved schema-validation cases match expectations. These are
+   local admission/validation results with zero inference calls, not live
+   decoder or semantic qualification.
+6. Prevent regression: committed public tests cover both sides of length,
+   branch-cost, physical-reference, root-choice, schema-byte, node and depth
+   boundaries; malformed branches/leaves, forbidden references and zero-size
+   arrays; wrong-task rejection before durable effects; actual worker output
+   rejection, failed storage/replay after reopening, successful siblings,
+   concurrent replay/identity/ACK/expiry, and preserved historical provenance.
+
+Output-exhaustion proof exercises both truncated JSON and schema-valid JSON
+with `finish_reason: length` through the actual worker validator and application.
+Both fail without ciphertext or completion provenance, including after database
+reopen and repeated requests with no second generation. A fresh normal completion
+succeeds and replays. Foreign passages and contradictory relation/list shapes
+exercise the same failure lifecycle. No runtime worker/store change was needed.
+
+Evidence directory alias: `c9-admission-implementation-20261005`.
+
+| Artifact alias | SHA-256 |
+| --- | --- |
+| `regressions-fail-before.log` | `b444a604e4e28182e0f8d41c910b7cda4de724cead5e35be98263928bb9254d6` |
+| `regressions-pass-after.log` | `4a613df7f50d71ea2e778b947ad4adce6025dac3e4676719f19ba9a095f7f5e0` |
+| `final-local-gate.log` | `b8ac18d862d4668ccca5f24a9e7d0413e52d0efaeebaefd69d9170ceb670ba70` |
+| `frozen-c9-schema-admission.json` | `330c03affa1d81716db388d7fa743b2316bc0572ee095712ab6014950cf65801` |
+| `tested-source-manifest.json` | `2e125202ad74403605a1e5f145aaf0eddb71198657d8f143a9b00da0ac6c0abf` |
 
 ## Cold diff audit
 
-This document is the only intended tracked diff from the pinned gateway base.
-Its three admission changes map to the three observed owner failures. The
-identity/cutover, other-consumer checks and C9 sequence implement the cited
-discussion's remaining requirements. Verify the documentation-only diff and
-identical `src`, `tests` and dependency trees before presenting its commit.
-Code tests are not rerun for a contract-only change.
+- `contracts.py:28,139,235,300,421`: length, compositional accounting and common
+  root choice classification. Minimal regressions, boundary tests and frozen C9
+  admission cover these changes. Physical structural caps remain unchanged.
+- `app.py:53`: policy version 2 identifies new completions. Existing consumers
+  and historical replay tests prove new versus retained provenance.
+- `tests/test_c9_admission.py:32,56,102,115,131,141,214,227,242,302,340,434`:
+  public owner regressions, boundary/forbidden-form checks, decoder order,
+  actual worker failure lifecycle and task isolation.
+- `tests/test_passage_schema.py:89,365`: replace the superseded over-length
+  boundary and exercise concurrent replay/ACK/expiry for both admitted root forms.
+- `tests/test_app.py:150,206,274,767`: update new completion identity and prove
+  old policy/deployment provenance survives restart while new work gets the new
+  identity.
+- `README.md` and `PR-SOURCE-PASSAGE-SCHEMA.md`: describe corrected admission,
+  output exhaustion, rollout receipt and explicitly superseded historical rules.
+- This contract records acceptance before code and the proof above. The tested
+  non-document manifest must match the committed source; documentation-only
+  reporting updates do not require rerunning code tests.
+
+`boundary-probe: valid caps and siblings pass; excessive cost, physical refs,
+length, schema bytes, nodes/depth, mixed or forbidden branches fail; unauthorized
+new forms cause no store/worker effects; exhausted output cannot complete or
+replay successfully.`
+
+`effect-trace: admit unchanged C9 schemas | Generation admission and the shared
+root-choice predicate consumed by task policy | three fail-before/pass-after
+regressions, frozen decoder-byte equality, actual worker route and lifecycle proof.`
 
 ## Gap audit
 
-DONE for the proposal once the documentation-only commit is verified.
-
-NOT DONE for implementation, deployment or C9 qualification. Operator acceptance
-is recorded; the baseline gate and fail-first regressions precede runtime edits.
-No live run or review-thread resolution follows from acceptance alone.
+NOT DONE for the full rollout. Local implementation and the required local gate
+are complete. Independent exact-head review, required CI, controlled deployment,
+identity receipt, both-runtime live grammar/admission probes and frozen C9
+controls remain. Observed C9 output sizes are recorded when those controls run.
+No deployment or live inference occurred during local implementation. PR116's
+hold, full A/B proof, independent fidelity review and unseen qualification remain.

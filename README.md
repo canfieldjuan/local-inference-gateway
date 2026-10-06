@@ -37,6 +37,11 @@ remain deferred.
   unbounded arrays, regex patterns, and open-ended combinators are rejected before worker dispatch
   so validation cannot monopolize the worker lane. Explicit `document.summary.step@2`
   credentials additionally admit [bounded shared passage definitions](docs/PR-SOURCE-PASSAGE-SCHEMA.md).
+  Under [the C9 admission contract](docs/PR-C9-GATEWAY-ADMISSION.md), these definitions
+  also compose with root object choices. Passage values may contain up to 4,096 characters;
+  the 32-selection output budget uses the largest alternative, while physical references
+  across all branches still share the 16-reference limit. All branches and unused definitions
+  are validated. Other tasks cannot dispatch passage definitions.
   Version 1 grants do not gain version 2. Its decoder field order follows required
   arrays; canonical request identity remains unchanged.
 - Output-token admission is task-specific: the Email Watcher tasks remain capped at 1,500, the
@@ -45,6 +50,10 @@ remain deferred.
 - Worker JSON rejects duplicate object keys and integer or fractional numbers outside the supported
   finite-binary64 range. Schema and output numbers share one exact validation domain, and
   token-limited completions are never persisted as successful results.
+  Schema admission does not guarantee that every permitted response fits its token allowance:
+  passage selections alone may total 131,072 characters. The document output cap stays at
+  4,096 tokens; exhausting it fails the request even when the returned text is valid JSON.
+  Retried requests replay that failure instead of returning a completed prefix.
 
 The public repository grants no access to a running gateway, its credentials, or private data. No
 software license has been selected yet.
@@ -374,6 +383,19 @@ The liveness route is intentionally unauthenticated and returns only protocol ve
 state. Use the existing per-application bearer token for authenticated health and inference.
 
 ## Verify
+
+### C9 admission rollout
+
+Deploy only the clean, independently reviewed revision after its required checks pass. Follow
+the [accepted contract's deployment receipt and C9 gates](docs/PR-C9-GATEWAY-ADMISSION.md):
+hold the exclusive inference/admission lane, verify no active work, stop the service, install
+the reviewed snapshot, set a fresh deployment ID, then start it. Keep the model, grants and
+other runtime settings fixed. Verify installed module hashes and the running process before
+and after each run; require task policy version 2 and the receipt's deployment ID on each
+new completion. Historical results retain their original provenance. The unchanged profile
+does not advertise these admission changes; use the deployment receipt to identify them.
+
+### Local gate
 
 ```bash
 uv run pytest -q
