@@ -89,6 +89,24 @@ values per passage enum, 16 reference nodes and 32 possible selected passages.
 Document task output stays 4096 tokens and context stays 32768. No truncation,
 enum inlining, text normalization, label changes or output allowance increase.
 
+### Output size and exhaustion
+
+Admission does not guarantee that a schema's largest valid response fits the
+unchanged 4096-token output allowance. With 32 possible passage selections of
+4096 characters each, the passage-text upper bound is 131072 characters, before
+JSON syntax and other fields. This is a character bound, not a token estimate.
+The former 7680-character passage bound was not a universal token-fit guarantee
+either; tokenization and serialization overhead also matter.
+
+Accept this explicit output-exhaustion risk without adding a character-weighted
+admission budget, increasing output tokens or changing DocSum's frozen schema.
+An output-limit finish must fail closed even if the returned prefix happens to
+be complete, schema-valid JSON. It must never become a completed stored or
+replayed result. Current `worker.py:388-389` rejects non-normal finish reasons
+before parsing; `app.py:212-221` records `InvalidWorkerOutput` as failed, and
+`app.py:336-342` replays that failure. These code paths require the integrated
+document-v2 regression below; inspecting them is not runtime proof.
+
 ### Owners and superseded rules
 
 - `contracts.py`: root-shape owner, passage-length limit and compositional
@@ -213,6 +231,15 @@ unproven under this gateway revision until their gates actually run.
    numbers, timeout/output-limit behavior, simultaneous identical-request replay,
    changed-schema identity conflict, expiry and ACK. Prove old completions keep
    old provenance across the policy/deployment change.
+   Add an integrated document-v2 output-limit regression using the actual worker
+   response validator, application route and persistent store. Feed a worker
+   response with `finish_reason: length` for both a truncated JSON body and a
+   schema-valid body: both must return non-retryable `invalid_worker_output`,
+   persist only failed state with no output payload or completion provenance,
+   and never report completed through status or replay. Reopen the same database
+   and prove replay still fails without another generation call. A fresh request
+   with the same valid body and `finish_reason: stop` must complete and replay.
+   An injected exception that bypasses the worker validator is insufficient.
 6. Run focused tests followed by the contract-required full pytest, Ruff lint and
    format checks, strict mypy and package build; CI verifies its wheel import.
    Record `boundary-probe` and `effect-trace` against the controlling admission
@@ -234,6 +261,14 @@ unproven under this gateway revision until their gates actually run.
    recorded passages contained in one selected piece on the original side and
    dimension. Keep zero wrong approvals mandatory; report latency and actual
    calls separately. No averaging, replacing failed attempts, tuning or IDs.
+   For every attempted dimension, record the observed decoded output character
+   count and UTF-8 byte count, selected-passage character total when parseable,
+   and finish reason/output-limit status. Retain available partial outputs as
+   private evidence, never as completed results. Report completion-token counts
+   when exposed by the existing transport; mark unavailable measurements
+   explicitly rather than deriving tokens from characters or adding production
+   telemetry. Summarize observed maxima and exhaustion failures across the C9
+   controls alongside the unchanged configured output allowance.
 9. Freeze and report the result. A failed prerequisite stops before controls;
    a failed control fails the candidate. Full A/B worker proof, independent
    review and unseen qualification remain before PR116's hold can be revisited.
