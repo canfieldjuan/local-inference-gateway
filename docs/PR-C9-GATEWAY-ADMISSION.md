@@ -1,7 +1,8 @@
 # Gateway admission for constrained C9 comparisons
 
-Status: PROPOSED on October 5, 2026 (America/Chicago). Operator acceptance
-is required before implementation. This document must be committed first.
+Status: ACCEPTED on October 5, 2026 (America/Chicago). The operator accepted
+amended revision `c9b12436619008d52b6d0d11283eb5551d94af69` before implementation.
+Acceptance is recorded in a separate documentation commit before code changes.
 
 Direction: [DocSum PR116 discussion](https://github.com/canfieldjuan/document-summarizer/pull/116#discussion_r4190858584).
 Gateway base: `6e5bb8be38f0e89e8ec61cd2bc30ac3121581744`, currently both remote
@@ -196,8 +197,8 @@ No PR116 merge or fidelity release is authorized by this contract.
 ## Assumptions and blockers
 
 The installed source must still match the pinned gateway when implementation
-begins; otherwise reconcile the exact diff before edits. The contract is pending
-operator acceptance. Deployment needs the existing host privileges and an idle
+begins; otherwise reconcile the exact diff before edits. Operator acceptance is
+recorded above. Deployment needs the existing host privileges and an idle
 admission lane. Runtime grammar support and C9 semantic performance remain
 unproven under this gateway revision until their gates actually run.
 
@@ -245,7 +246,7 @@ unproven under this gateway revision until their gates actually run.
    Record `boundary-probe` and `effect-trace` against the controlling admission
    and dispatch code. Publish for independent exact-head PR review, reconcile
    findings at their origin, then merge/deploy only with green required checks
-   and resolved review. No implementation starts on this proposed contract alone.
+   and resolved review. Implementation follows the recorded operator acceptance.
 7. Verify the corrected installed gateway identity as above, then resume C9 on
    its existing branch with the accepted gates unchanged: recheck static coverage
    on the frozen splitter; measure actual gateway and native maximum admitted
@@ -293,5 +294,5 @@ Code tests are not rerun for a contract-only change.
 DONE for the proposal once the documentation-only commit is verified.
 
 NOT DONE for implementation, deployment or C9 qualification. Operator acceptance
-of this committed contract is the next gate. No live run or review-thread
-resolution follows from drafting it.
+is recorded; the baseline gate and fail-first regressions precede runtime edits.
+No live run or review-thread resolution follows from acceptance alone.
