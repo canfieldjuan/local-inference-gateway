@@ -50,7 +50,7 @@ from .worker import (
     WorkerUnavailable,
 )
 
-TASK_POLICY_VERSION = 1
+TASK_POLICY_VERSION = 2
 
 
 @dataclass(frozen=True)

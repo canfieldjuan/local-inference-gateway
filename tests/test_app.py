@@ -198,7 +198,7 @@ def test_scheduling_task_uses_existing_durable_lifecycle(gateway) -> None:  # ty
     )
 
     assert completed.status_code == 200
-    assert completed.json()["provenance"]["task_policy_version"] == 1
+    assert completed.json()["provenance"]["task_policy_version"] == 2
     assert acknowledgement.status_code == 200
     assert gateway.worker.calls == 1
 
@@ -266,7 +266,7 @@ def test_document_summary_step_uses_existing_durable_lifecycle(gateway) -> None:
     )
 
     assert completed.status_code == 200
-    assert completed.json()["provenance"]["task_policy_version"] == 1
+    assert completed.json()["provenance"]["task_policy_version"] == 2
     assert acknowledgement.status_code == 200
     assert gateway.worker.calls == 1
 
@@ -306,7 +306,7 @@ def test_invoice_extraction_batch_uses_existing_durable_lifecycle(gateway) -> No
 
     assert completed.status_code == replay.status_code == 200
     assert completed.json() == replay.json()
-    assert completed.json()["provenance"]["task_policy_version"] == 1
+    assert completed.json()["provenance"]["task_policy_version"] == 2
     assert acknowledgement.status_code == 200
     assert after_ack.status_code == 410
     assert after_ack.json()["error"]["code"] == "unknown_request"
@@ -764,10 +764,12 @@ def test_request_body_size_boundary_is_enforced_before_validation(tmp_path) -> N
     assert below_limit.worker.calls == 0
 
 
-def test_restart_replays_completed_ciphertext_without_worker_call(tmp_path) -> None:  # type: ignore[no-untyped-def]
+def test_restart_replays_completed_ciphertext_without_worker_call(tmp_path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     first = build_harness(tmp_path)
     document = first.request()
-    original = first.client.post("/v1/inference", headers=first.headers, json=document)
+    with monkeypatch.context() as old_policy:
+        old_policy.setattr("local_inference_gateway.app.TASK_POLICY_VERSION", 1)
+        original = first.client.post("/v1/inference", headers=first.headers, json=document)
 
     restarted_worker = FakeWorker()
     restarted_store = RequestStore(
@@ -795,6 +797,15 @@ def test_restart_replays_completed_ciphertext_without_worker_call(tmp_path) -> N
         "deployment_id": "test-deployment",
     }
     assert restarted_worker.calls == 0
+    fresh = deepcopy(document)
+    fresh["request_id"] = "22345678-1234-4234-8234-123456789abc"
+    completed = restarted.post("/v1/inference", headers=first.headers, json=fresh)
+    assert completed.status_code == 200
+    assert completed.json()["provenance"] == {
+        "task_policy_version": 2,
+        "deployment_id": "replacement-deployment",
+    }
+    assert restarted_worker.calls == 1
 
 
 def test_scheduled_maintenance_removes_idle_expired_ciphertext(tmp_path) -> None:  # type: ignore[no-untyped-def]

@@ -1,5 +1,19 @@
 # Bounded source-passage schema support (gateway issue 28)
 
+Historical contract. The accepted [C9 admission contract](PR-C9-GATEWAY-ADMISSION.md)
+supersedes exactly these original admission rules:
+
+- Definitions compose with a root closed-object `anyOf`, as well as an object root.
+- Passage selection cost takes the largest alternative, rather than summing alternatives.
+  Simultaneous properties still sum; enclosing arrays still multiply. Physical reference,
+  node, depth and schema-byte caps still count all serialized branches.
+- The per-passage length cap is 4096 characters, replacing 240. All other limits remain.
+
+Admission does not promise that the largest schema-valid output fits the unchanged
+4096-token output cap. Output-limit responses fail and cannot persist or replay as
+completed. The C9 contract requires a full lifecycle regression and observed output sizes.
+The original implementation history below is retained as history, not current admission law.
+
 ## Contract
 
 ### Root cause
