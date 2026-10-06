@@ -52,7 +52,7 @@ test -z "$(git status --porcelain)"
 cd src-tauri
 cargo test --lib pipeline::summary::comparisons -- --nocapture
 cargo test --all-features --test c9_production_gate
-cargo test --lib pipeline::summary::service -- --nocapture
+cargo test --lib pipeline::service -- --nocapture
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
 ```
@@ -134,7 +134,13 @@ Retain all raw attempts privately, exact owned membership, relation validity, pa
 
 A clean sentence development result permits a separately accepted activation/delivery proposal, not activation. Ordinary-library gate remains. Full A/B proof must exercise DesktopJobManager new/start_pdf with copied installed settings, fresh database, persisted stage/artifact records and reopen through workspace::get_persisted_summary. Require comparison verification actually exercised: gated fallback alone cannot pass. Visual UI acceptance, independent semantic review and locked unseen qualification remain distinct.
 
-Locate the existing app-worker opt-in test and its environment schema at the then-current source before issuing a live command; the sentence runner is not that test. This runbook does not fabricate unseen fixtures, fidelity thresholds or a release command. Exact-head CI/review and explicit operator clearance of discussion_r4196409571 remain mandatory. Neither Strata tests, gateway green tests nor development controls clear PR116.
+The committed driver is desktop::tests::complete_document_live_app_worker_proof. After separately accepted activation/delivery prerequisites, prepare a fresh owner-private DOC_SUM_APP_PROOF_OUTPUT containing inputs.json (exactly A and B records with alias, absolute path and sha256) and app-data/com.juan-canfield.docsum/model-settings-v1.json copied unchanged from installed settings. summarizer.db must not yet exist. From src-tauri:
+```bash
+export DOC_SUM_APP_PROOF_OUTPUT=/private/path/fresh-app-proof
+flock -n "$C9_PROOF_LOCK" cargo test --lib complete_document_live_app_worker_proof -- --ignored --nocapture > "$DOC_SUM_APP_PROOF_OUTPUT/proof.log" 2>&1
+python -c 'import json,os; r=json.load(open(os.environ["DOC_SUM_APP_PROOF_OUTPUT"]+"/results.json")); assert len(r)==2 and {x["alias"] for x in r}=={"A","B"} and all(x["passed"] and x["c9_qualified"] and x["comparison_used"] and x["coherent"] and x["reopen_equal"] for x in r)'
+```
+This is conditional future delivery proof, not permission to activate ordinary builds. The separate complete_document_live_app_worker_fallback_proof cannot replace it. No unseen fixtures, fidelity thresholds or release command are fabricated. Exact-head CI/review and explicit operator clearance of discussion_r4196409571 remain mandatory. Neither Strata tests, gateway green tests nor development controls clear PR116.
 
 ## Verification of this runbook
 
