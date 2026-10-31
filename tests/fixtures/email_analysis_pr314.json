@@ -1,0 +1,92 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "category": {
+      "enum": [
+        "invoice",
+        "scheduling",
+        "customer_request",
+        "automated_notice",
+        "informational",
+        "other"
+      ],
+      "title": "Category",
+      "type": "string"
+    },
+    "priority": {
+      "enum": [
+        "urgent",
+        "high",
+        "normal",
+        "low"
+      ],
+      "title": "Priority",
+      "type": "string"
+    },
+    "summary": {
+      "maxLength": 800,
+      "minLength": 1,
+      "title": "Summary",
+      "type": "string"
+    },
+    "action_required": {
+      "title": "Action Required",
+      "type": "boolean"
+    },
+    "suggested_action": {
+      "anyOf": [
+        {
+          "maxLength": 500,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Suggested Action"
+    },
+    "deadline_text": {
+      "anyOf": [
+        {
+          "maxLength": 200,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Deadline Text"
+    },
+    "deadline_iso": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Deadline Iso"
+    },
+    "confidence": {
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Confidence",
+      "type": "number"
+    }
+  },
+  "required": [
+    "category",
+    "priority",
+    "summary",
+    "action_required",
+    "suggested_action",
+    "deadline_text",
+    "deadline_iso",
+    "confidence"
+  ],
+  "title": "Analysis",
+  "type": "object"
+}

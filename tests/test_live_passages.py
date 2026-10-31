@@ -167,7 +167,9 @@ def test_live_passage_gateway_admission_replay_and_ack() -> None:
             }
             admitted = InferenceRequest.model_validate(request)
             assert (
-                encode_json_bytes(decoder_schema(schema), sort_keys=False)
+                encode_json_bytes(
+                    decoder_schema(schema, task=("document.summary.step", 2)), sort_keys=False
+                )
                 == raw["decoder_schema_json"].encode()
             )
             headers = {"Authorization": f"Bearer {token}"}
