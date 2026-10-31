@@ -21,9 +21,10 @@ GPU-availability retry, or production change is authorized. The old recommendati
 to resume a fresh replay is superseded by this hold. Retain the code and evidence;
 neither their existence nor green CI constitutes contract acceptance.
 
-This contract stops at review and Juan's acceptance naming its exact full commit.
-Record that acceptance verbatim before any later implementation. Oversight PASS,
-automated checks, silence, and earlier general assent do not substitute for it.
+This contract stops at oversight PASS followed by Juan's acceptance naming that
+exact full commit. Record the acceptance verbatim before any later implementation.
+Oversight PASS, automated checks, silence, and earlier general assent do not
+substitute for it.
 Live inference and deployment each require their own explicit authorization and
 applicable gates; accepting this text is not permission to run either now.
 
@@ -41,6 +42,13 @@ identify the missing app dependency and missing acceptance. Initial sorted dispa
 came from `872fba9`; `5df8119` retained it for non-passage schemas. The proposed
 origin owner is one decoder-order policy in `contracts.py`, consumed by worker
 projection and final serialization. Canonical identity remains a separate owner.
+
+[Contract review C1](https://github.com/canfieldjuan/local-inference-gateway/pull/37#issuecomment-6545587508)
+corrects the first draft's mechanism: a deployment checklist left a third,
+untested partial-required order reachable. The revised proposal makes that order
+unrepresentable by retaining the entire existing sorted request whenever any
+object node is not completely required. This supersedes the first draft's
+partial projection and its deployment STOP for partial consumers.
 
 ## Validated inventory and limits
 
@@ -79,7 +87,10 @@ Artifact aliases and SHA256:
 | email-order-contract-schema-inventory | `44ba0acae146ed3202a9a20c84a7d9c50c21495eb39d3ba738947c7201df86f1` |
 
 All artifacts are durable outside worktrees. The last receipt is read-only schema
-declaration inspection for this contract, not a test suite or inference run.
+declaration inspection, not a test suite or inference run. Its
+`proposed_required_first_wire` entries describe the superseded first draft and
+remain historical evidence; the revised expected behavior is specified below.
+Do not treat that receipt as verification of the new eligibility mechanism.
 
 ## G1: explicit dependency and partial-required behavior
 
@@ -93,60 +104,93 @@ The directly declared property sequence at both inspected app revisions is:
 
 `category, priority, summary, action_required, suggested_action, deadline_text, deadline_iso, confidence`
 
-The proposed policy is explicit: at each admitted object-schema node, emit the
-properties named in `required` in that array's order, then the remaining optional
-properties alphabetically. Recurse through admitted properties/items/alternatives;
-keep schema constraints, array order and the existing passage behavior unchanged.
-Missing or empty `required` means all properties are optional and alphabetical.
-This is deterministic required-first projection, not arbitrary mapping-order
-preservation. It does not add required fields or reject a partial list at runtime.
+The proposed policy is conditional and applies to `email.analyze@1`:
 
-| Consumer schema | Required sequence | Expected proposed worker property order | Direct parity |
+1. Inspect every admitted object-schema node, including objects nested through
+   properties, array items and admitted alternative branches. Decoder ordering is
+   eligible only if each node's `required` list names all that node's properties.
+   Check property coverage, not equal list lengths. Existing schema admission
+   continues to own malformed lists and unsupported schema forms.
+2. If every object node is complete, project each object's properties in its
+   explicit required-array sequence and preserve that projection at final dispatch.
+   This is required-array ordering, not arbitrary input mapping-order preservation.
+3. If any object node is incomplete, preserve the **existing sorted transport for
+   the entire schema and request**. Do not project a complete root while sorting
+   only its partial child, and do not retain a required-first prefix on a partial
+   root. Missing or empty `required` for a nonempty property map is incomplete.
+   No field is added, requiredness changed, or otherwise valid request rejected.
+
+The all-object eligibility decision and final serialization must share one owner.
+Existing passage-task ordering remains unchanged; this email condition does not
+widen schema admission or alter other tasks. The parked PR36 code lacks this
+condition and is not an accepted implementation of this revision.
+
+| Consumer schema | Required sequence | Expected revised worker property order | Direct parity |
 | --- | --- | --- | --- |
-| Email Watcher main `69b98e958eebb7f5941831b9c27373aa8d4b3fbf` | category, priority, summary, action_required, confidence | category, priority, summary, action_required, confidence, deadline_iso, deadline_text, suggested_action | **No. Deployment blocked.** |
+| Email Watcher main `69b98e958eebb7f5941831b9c27373aa8d4b3fbf` | category, priority, summary, action_required, confidence | action_required, category, confidence, deadline_iso, deadline_text, priority, suggested_action, summary | **No; today's alphabetical transport is preserved.** |
 | PR314 head `7338985b2a7501a3a4e3513457396601a8dd4b23` | category, priority, summary, action_required, suggested_action, deadline_text, deadline_iso, confidence | category, priority, summary, action_required, suggested_action, deadline_text, deadline_iso, confidence | Field order matches; full live parity still unproven. |
 
-The partial-list sequence above is neither direct order nor the installed gateway's
-alphabetical order (`action_required, category, confidence, deadline_iso,
-deadline_text, priority, suggested_action, summary`). Stable does not mean qualified.
+For the real main shape, the superseded third order (`category, priority, summary,
+action_required, confidence, deadline_iso, deadline_text, suggested_action`) must
+never reach the worker. The partial regression must assert exact equality with
+today's installed sorted wire, as well as inequality with the direct order.
 The real declarations are at main `src/eom_email_watcher/model.py:81-93` and PR314
-`src/eom_email_watcher/model.py:81-95`; the receipt pins their source hashes.
+`src/eom_email_watcher/model.py:81-95`; the retained receipt pins their source hashes.
 
-**Future deployment precondition, not a claim that the parked code enforces it:**
-PR314 must be merged and its intended schema behavior must be present in every
-actual Email Watcher consumer to be routed to the changed gateway. Record the
-installed consumer revision and emitted schema hash/order. Require every property
-to appear in `required` exactly in the validated direct sequence above. A merged
-PR alone, an uninstalled branch, a mixed fleet, a partial/unknown schema, or a
-changed sequence is a STOP. Leave that consumer on the existing deployment; do
-not silently use the third order, normalize its schema, or waive the dependency.
-A later consumer revision must be re-bound to the inventory before qualification.
-There is no gateway deployment or client cutover in this contract-only PR.
+A mixed fleet or an app rollback is handled per request: a partial-required consumer
+keeps today's sorted behavior, while a completely required consumer is eligible
+for required-array ordering. A complete root with a partial nested object must
+retain sorted transport for the whole request, including that root. No operator
+checklist is the sole protection against the third order.
+
+PR314 remains the dependency for the **measured direct-order parity claim**, not
+an all-consumers-must-upgrade prerequisite for preserving old behavior. Its merge
+is not required to land a separately accepted and reviewed gateway change whose
+partial-schema path preserves existing bytes. This contract does not authorize
+that landing or clear PR314's independent gates. The deployment STOP solely for
+partial consumers is removed; installed qualification, consumer/schema inventory,
+independent review and Juan's explicit deployment authorization remain required.
+Record which actual consumers take which branch; do not claim direct parity for
+partial consumers. Re-bind a changed consumer revision to the frozen inventory
+before claiming qualified parity. No deployment or cutover occurs in this PR.
 
 ## Proposed change surface after acceptance
 
-- Extend one decoder-order policy to exactly `email.analyze@1`, used by both schema
-  projection and final wire serialization, including the inherited LM Studio path.
-  Replace the passage-only transport decision rather than adding a downstream fix.
+- Extend one decoder-order policy to exactly `email.analyze@1` only when every
+  object node is completely required. Both schema projection and final wire
+  serialization, including inherited LM Studio behavior, consume that single
+  eligibility decision. Otherwise use unchanged whole-request sorted transport.
+  Replace the passage-only transport decision rather than add a downstream fix.
+- The `task` argument is required on the decoder policy and projection APIs: no
+  default `None`, omitted-task fallback, or inference from schema shape. All
+  callers, including passage callers, must supply the explicit task.
 - Preserve canonical envelope hashing, exact-number handling, replay/conflict,
   expiry, acknowledgement, authorization, cancellation and capacity behavior.
-  Required-array order already participates in identity; mapping order does not.
+  Both the task and required-array order already participate in identity; mapping
+  order does not. The eligibility rule adds no new replay-identity input.
 - Keep passage schemas unchanged; ordinary scheduling, invoice and non-passage
   document schemas retain their existing transport. This is a narrow email slice,
   not completion of [gateway issue35](https://github.com/canfieldjuan/local-inference-gateway/issues/35).
   Invoice adoption remains blocked on its separate whole-schema-order/parity work.
+  Scheduling parity is unmeasured; keeping its sorted gateway transport does not
+  establish parity with Email Watcher's direct scheduling path.
 - Add the real partial-required main-shape regression and the full PR314-shape
   regression. Assert the literal sequences above on captured final wire bytes,
-  not dictionary equality. The partial regression must explicitly assert inequality
-  with direct order. It documents unsupported rollout; it does not qualify it.
-- Document the dependency, expected partial behavior, explicit rollout STOP and
+  not dictionary equality. The partial regression must assert exact equality with
+  the installed sorted wire and inequality with direct order. Add a complete-root,
+  partial-nested-object case: the entire schema/request must retain sorted bytes,
+  not a mixture of projected and sorted nodes. Cover the nested condition through
+  properties, array items and admitted alternative branches.
+- Document the dependency, conditional partial behavior, qualification limits and
   retained existing results. Decide whether any parked code can be reused only
   after acceptance and review against this contract; do not cherry-pick it now.
 
 ## Differences from the validated experiment
 
-1. Required-array projection replaces insertion-order reliance. It equals the
-   validated direct order only under the complete-required dependency above.
+1. Required-array projection replaces insertion-order reliance only when every
+   object node is completely required. Otherwise the entire existing sorted wire
+   is preserved. The projection equals the validated direct order for the complete
+   PR314 schema; partial-schema compatibility is not a direct-parity claim.
 2. Future qualification would exercise the corrected gateway API and worker with
    captured outgoing bytes, rather than direct OpenAI-shaped POSTs. Preserve
    messages, schema values, thinking framing, runtime/model pins and budgets.
@@ -167,10 +211,16 @@ After exact-revision acceptance, proposed implementation evidence must include:
 
 - Fail-first actual-ingress-to-wire probes for full and partial real schema shapes,
   both adapters, nested objects/arrays/nullable branches, missing/empty/partial
-  required arrays, reordered input mappings and no input mutation. Preserve the
-  failure and source pins outside worktrees before applying an accepted fix.
+  required arrays, reordered input mappings and no input mutation. Require whole-
+  request sorted-wire equality for a complete root containing any partial nested
+  object, including in items and alternatives. Probe both eligible and ineligible
+  sides; no partial required-first prefix may survive. Preserve failure evidence
+  and source pins outside worktrees before applying an accepted fix.
 - Equal canonical identities must produce identical decoder bytes for mapping-key
-  reorderings; changing a required sequence changes both identity and wire order.
+  reorderings. Changing a required sequence changes identity; for an eligible
+  schema it also changes decoder order. An ineligible schema remains wholly sorted
+  even if its partial required list is reordered. Omitting the required task
+  argument must fail at the API boundary, not silently choose another policy.
   Exercise stored replay/conflict, expiry/acknowledgement and unchanged sibling
   task/passage behavior. Preserve exact decimal/schema admission constraints.
 - Required local gate and independent exact-head review; current code's earlier
@@ -184,9 +234,10 @@ After exact-revision acceptance, proposed implementation evidence must include:
   worker, identical model/runtime/profile pins,120s per request/1200s total,
   no retries, and owned-process cleanup. Any foreign owner or unreadable ownership
   signal stops the run without automatic retry. Preserve the old STOP packet.
-- Installed gateway qualification and rollout remain separate and blocked on the
-  complete-required consumer inventory, full parity, independent review and Juan's
-  explicit deployment authorization. No production change is implied by unit green.
+- Installed gateway qualification and rollout remain separate: inventory consumer
+  schemas, prove unchanged sorted bytes for partial consumers and qualified parity
+  for the complete frozen schema, obtain independent review and Juan's explicit
+  deployment authorization. No production change is implied by unit green.
 
 ## Explicit non-scope
 
@@ -200,8 +251,9 @@ No approval review, merge, history rewrite or deletion of parked work.
 
 This proposal adds only this Markdown contract from gateway main. It corrects the
 authorization statement, names the unmerged dependency, fixes the partial-required
-expectation, and specifies future acceptance/qualification boundaries. Source,
-tests, runtime settings and the parked implementation are unchanged. Verify the
+expectation with a whole-schema eligibility condition, and specifies future
+acceptance/qualification boundaries. Source, tests, runtime settings and the
+parked implementation are unchanged. Verify the
 publication diff contains this file alone; no code test suite is warranted for it.
 
 ## Gap audit and stop
