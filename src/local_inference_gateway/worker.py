@@ -20,7 +20,7 @@ from .contracts import (
     parse_json_integer,
     parse_json_object_pairs,
     required_context_tokens,
-    uses_passage_definitions,
+    uses_decoder_field_order,
 )
 
 MAX_WORKER_RESPONSE_BYTES = 1_000_000
@@ -220,8 +220,9 @@ class OllamaWorker:
                         f"{self.base_url}/v1/chat/completions",
                         content=encode_json_bytes(
                             payload,
-                            sort_keys=not uses_passage_definitions(
-                                request.generation.response_schema
+                            sort_keys=not uses_decoder_field_order(
+                                request.generation.response_schema,
+                                (request.task.id, request.task.version),
                             ),
                         ),
                         headers={"Content-Type": "application/json"},
@@ -258,7 +259,9 @@ class OllamaWorker:
                 "json_schema": {
                     "name": request.task.id.replace(".", "_") + f"_v{request.task.version}",
                     "strict": True,
-                    "schema": decoder_schema(generation.response_schema),
+                    "schema": decoder_schema(
+                        generation.response_schema, task=(request.task.id, request.task.version)
+                    ),
                 },
             },
         }

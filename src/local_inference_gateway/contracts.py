@@ -265,9 +265,16 @@ def _passage_definitions(schema: dict[str, Any]) -> dict[str, Any] | None:
     return definitions
 
 
-def decoder_schema(schema: dict[str, Any]) -> dict[str, Any]:
+def uses_decoder_field_order(schema: dict[str, Any], task: tuple[str, int] | None = None) -> bool:
+    """Select the required-array order already represented in canonical identity."""
+    return task == ("email.analyze", 1) or uses_passage_definitions(schema)
+
+
+def decoder_schema(
+    schema: dict[str, Any], *, task: tuple[str, int] | None = None
+) -> dict[str, Any]:
     """Derive decoder order from admitted required arrays, never input key order."""
-    if not uses_passage_definitions(schema):
+    if not uses_decoder_field_order(schema, task):
         return schema
 
     def ordered(value: Any, *, schema_node: bool = False) -> Any:
