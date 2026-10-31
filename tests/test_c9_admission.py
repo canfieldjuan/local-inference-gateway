@@ -309,9 +309,13 @@ def test_c9_relation_shapes_and_decoder_order(gateway: Any) -> None:
     schema = c9_schema()
     request = admitted_request(gateway, schema)
     shuffled = admitted_request(gateway, json.loads(json.dumps(schema, sort_keys=True)))
-    wire = encode_json_bytes(decoder_schema(request.generation.response_schema), sort_keys=False)
+    wire = encode_json_bytes(
+        decoder_schema(request.generation.response_schema, task=("document.summary.step", 2)),
+        sort_keys=False,
+    )
     assert wire == encode_json_bytes(
-        decoder_schema(shuffled.generation.response_schema), sort_keys=False
+        decoder_schema(shuffled.generation.response_schema, task=("document.summary.step", 2)),
+        sort_keys=False,
     )
     assert request.canonical_digest() == shuffled.canonical_digest()
     for branch in json.loads(wire)["anyOf"]:
@@ -396,7 +400,7 @@ def test_document_v2_bad_output_cannot_complete_or_replay(gateway: Any, failure:
     assert calls[0]["max_tokens"] == 4096
     wire_schema = calls[0]["response_format"]["json_schema"]["schema"]
     assert encode_json_bytes(wire_schema, sort_keys=False) == encode_json_bytes(
-        decoder_schema(c9_schema()), sort_keys=False
+        decoder_schema(c9_schema(), task=("document.summary.step", 2)), sort_keys=False
     )
     with sqlite3.connect(gateway.settings.database_path) as db:
         row = db.execute(

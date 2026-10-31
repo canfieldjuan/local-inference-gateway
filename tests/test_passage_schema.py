@@ -280,10 +280,12 @@ def test_decoder_order_and_identity_have_separate_owners(gateway: Any) -> None:
     before = first.canonical_digest()
     assert before == reordered.canonical_digest()
     first_wire = encode_json_bytes(
-        decoder_schema(first.generation.response_schema), sort_keys=False
+        decoder_schema(first.generation.response_schema, task=("document.summary.step", 2)),
+        sort_keys=False,
     )
     second_wire = encode_json_bytes(
-        decoder_schema(reordered.generation.response_schema), sort_keys=False
+        decoder_schema(reordered.generation.response_schema, task=("document.summary.step", 2)),
+        sort_keys=False,
     )
     assert first_wire == second_wire
     assert first.canonical_digest() == before
@@ -448,6 +450,6 @@ def test_decoder_treats_annotations_as_data(gateway: Any) -> None:
         "properties": {"anything": {"$ref": "https://example.invalid/annotation"}},
     }
     admitted = admitted_request(gateway, schema)
-    result = decoder_schema(admitted.generation.response_schema)
+    result = decoder_schema(admitted.generation.response_schema, task=("document.summary.step", 2))
     assert result["default"] == schema["default"]
     assert list(result["properties"]) == ["z_source", "a_relation"]

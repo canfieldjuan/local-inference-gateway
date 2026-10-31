@@ -265,9 +265,30 @@ def _passage_definitions(schema: dict[str, Any]) -> dict[str, Any] | None:
     return definitions
 
 
-def decoder_schema(schema: dict[str, Any]) -> dict[str, Any]:
+def uses_decoder_field_order(schema: dict[str, Any], *, task: tuple[str, int]) -> bool:
+    """Select decoder order for an admitted schema, separately from replay identity."""
+    if uses_passage_definitions(schema):
+        return True
+    if task != ("email.analyze", 1):
+        return False
+
+    pending = [schema]
+    while pending:
+        node = pending.pop()
+        properties = node.get("properties", {})
+        if not properties.keys() <= set(node.get("required", [])):
+            return False
+        # Traverse only admitted schema positions, never annotation/default data.
+        pending.extend(properties.values())
+        if "items" in node:
+            pending.append(node["items"])
+        pending.extend(node.get("anyOf", []))
+    return True
+
+
+def decoder_schema(schema: dict[str, Any], *, task: tuple[str, int]) -> dict[str, Any]:
     """Derive decoder order from admitted required arrays, never input key order."""
-    if not uses_passage_definitions(schema):
+    if not uses_decoder_field_order(schema, task=task):
         return schema
 
     def ordered(value: Any, *, schema_node: bool = False) -> Any:
