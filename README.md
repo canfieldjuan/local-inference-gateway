@@ -395,6 +395,18 @@ and after each run; require task policy version 2 and the receipt's deployment I
 new completion. Historical results retain their original provenance. The unchanged profile
 does not advertise these admission changes; use the deployment receipt to identify them.
 
+### Email decoder order parity
+
+`email.analyze@1` derives decoder property order from each schema node's `required`
+array, followed by alphabetized optional properties. Reordering JSON mapping keys
+does not change decoder bytes or canonical retry identity. The worker preserves
+this projection when dispatching to Ollama or the eligible LM Studio adapter.
+Other ordinary task schemas retain their existing sorted transport.
+
+The frozen-fixture inventory, isolated replay procedure, and deployment boundary
+are recorded in [the email order contract](docs/PR-EMAIL-SCHEMA-ORDER-PARITY.md).
+This code change does not install or restart the production gateway.
+
 ### Local gate
 
 ```bash
